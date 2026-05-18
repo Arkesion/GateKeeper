@@ -182,7 +182,7 @@
     }
 
     #clock {
-      font-size: 72px;
+      font-size: 96px;
       font-weight: bold;
       color: #ffffff;
       letter-spacing: 4px;
@@ -415,11 +415,11 @@
     const buyV  = document.getElementById('buyVerdict');
     const sellV = document.getElementById('sellVerdict');
 
-    if (buyPass === 5) {
+    if (buyPass === 6) {
       buyV.textContent = '⚡ SETUP READY — WATCH TAPE';
       buyV.className   = 'verdict verdict-buy';
     } else {
-      buyV.textContent = `VERDICT: ${buyPass}/5 CONDITIONS MET`;
+      buyV.textContent = `VERDICT: ${buyPass}/6 CONDITIONS MET`;
       buyV.className   = 'verdict verdict-wait';
     }
 
