@@ -259,7 +259,7 @@ function checkVWAPBreakDuringConsolidation(candles, vwap) {
 async function buildSignals(symbol) {
   const [quote, candles5m] = await Promise.all([
     getQuote(symbol),
-    getPriceHistory(symbol, 'day', 1, 'minute', 5)
+    getPriceHistory(symbol, 'day', 5, 'minute', 5)
   ]);
 
   if (!quote || candles5m.length < 30) return null;
