@@ -49,37 +49,23 @@ const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
 const redirectUri  = process.env.REDIRECT_URI;
 const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-// Step 1: Login redirect
 app.get('/login', (req, res) => {
   const authUrl = `${SCHWAB_AUTH_URL}?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   res.redirect(authUrl);
 });
 
-// Step 2: Schwab redirects back here with auth code
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   if (!code) return res.send('No auth code received.');
-
   try {
     const response = await axios.post(SCHWAB_TOKEN_URL,
-      new URLSearchParams({
-        grant_type:   'authorization_code',
-        code,
-        redirect_uri: redirectUri
-      }),
-      {
-        headers: {
-          'Authorization': `Basic ${basicAuth}`,
-          'Content-Type':  'application/x-www-form-urlencoded'
-        }
-      }
+      new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri }),
+      { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
-
     accessToken  = response.data.access_token;
     refreshToken = response.data.refresh_token;
     tokenExpiry  = Date.now() + (response.data.expires_in * 1000);
     saveTokens();
-
     console.log('✅ Authenticated with Schwab');
     res.send('<script>window.close();</script>Authenticated! You can close this window.');
   } catch (err) {
@@ -88,24 +74,13 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-// Refresh token if expired
 async function ensureToken() {
   if (!accessToken) throw new Error('Not authenticated');
   if (Date.now() < tokenExpiry - 60000) return;
-
   const response = await axios.post(SCHWAB_TOKEN_URL,
-    new URLSearchParams({
-      grant_type:    'refresh_token',
-      refresh_token: refreshToken
-    }),
-    {
-      headers: {
-        'Authorization': `Basic ${basicAuth}`,
-        'Content-Type':  'application/x-www-form-urlencoded'
-      }
-    }
+    new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+    { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
   );
-
   accessToken = response.data.access_token;
   tokenExpiry = Date.now() + (response.data.expires_in * 1000);
   saveTokens();
@@ -132,12 +107,25 @@ async function getPriceHistory(symbol, periodType, period, frequencyType, freque
 }
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
+
+// EMA on candle array (uses .close)
 function calcEMA(candles, period) {
   if (candles.length < period) return null;
   const k = 2 / (period + 1);
   let ema = candles.slice(0, period).reduce((s, c) => s + c.close, 0) / period;
   for (let i = period; i < candles.length; i++) {
     ema = candles[i].close * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+// EMA on a plain number array
+function calcEMAFromValues(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
   }
   return ema;
 }
@@ -154,28 +142,38 @@ function calcVWAP(candles) {
 
 function calcEMASlope(candles, period) {
   if (candles.length < period + 1) return false;
-  const prev   = candles.slice(0, -1);
   const emaNow  = calcEMA(candles, period);
-  const emaPrev = calcEMA(prev, period);
+  const emaPrev = calcEMA(candles.slice(0, -1), period);
   return emaNow > emaPrev;
 }
 
+// Full MACD: line, signal line, histogram
+// histogram > 0 = MACD line above signal = bullish momentum
 function calcMACD(candles) {
   if (candles.length < 35) return null;
-  const ema12    = calcEMA(candles, 12);
-  const ema26    = calcEMA(candles, 26);
-  const macdLine = ema12 - ema26;
-  // Signal line = 9 EMA of MACD values
-  const macdHistory = candles.slice(-35).map((_, i, arr) => {
-    const slice = arr.slice(0, i + 1);
-    if (slice.length < 26) return null;
+
+  // Build MACD line value for each candle starting from candle 26
+  const macdValues = [];
+  for (let i = 26; i <= candles.length; i++) {
+    const slice = candles.slice(0, i);
     const e12 = calcEMA(slice, 12);
     const e26 = calcEMA(slice, 26);
-    return e12 - e26;
-  }).filter(v => v !== null);
-  const signal    = calcEMA(macdHistory.map((v, i) => ({ close: v })), 9);
-  const histogram = macdLine - signal;
-  return { line: macdLine, signal, histogram };
+    if (e12 !== null && e26 !== null) {
+      macdValues.push(e12 - e26);
+    }
+  }
+
+  if (macdValues.length < 9) return null;
+
+  const macdLine = macdValues[macdValues.length - 1];
+  const signal   = calcEMAFromValues(macdValues, 9);
+  if (signal === null) return null;
+
+  return {
+    line:      macdLine,
+    signal:    signal,
+    histogram: macdLine - signal
+  };
 }
 
 function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
@@ -198,72 +196,40 @@ function checkToppingTail(candles) {
   const c     = candles[candles.length - 1];
   const range = c.high - c.low;
   if (range === 0) return false;
-  const upperWick = c.high - c.close;
-  return (upperWick / range) > 0.6;
+  return (c.high - c.close) / range > 0.6;
 }
 
 function checkCandleUnderCandle(candles) {
   if (candles.length < 2) return false;
-  const curr = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
-  return curr.close < prev.low;
+  return candles[candles.length - 1].close < candles[candles.length - 2].low;
 }
 
-// Pullback ≤ 50% of prior move (Bull Flag / Micro Pullback)
-// Looks back up to 10 candles for the pole high, then measures the pullback
 function checkPullback(candles) {
   if (candles.length < 5) return { valid: false, pct: null };
-
   const recent = candles.slice(-10);
-
-  // Find the highest high in the recent window (pole top)
   let poleHighIdx = 0;
   for (let i = 1; i < recent.length; i++) {
     if (recent[i].high > recent[poleHighIdx].high) poleHighIdx = i;
   }
-
-  // Need at least one candle before and after the high
-  if (poleHighIdx === 0 || poleHighIdx === recent.length - 1) {
-    return { valid: false, pct: null };
-  }
-
-  // Pole bottom: lowest low before the pole high
+  if (poleHighIdx === 0 || poleHighIdx === recent.length - 1) return { valid: false, pct: null };
   const beforePole = recent.slice(0, poleHighIdx);
   const poleBottom = Math.min(...beforePole.map(c => c.low));
   const poleTop    = recent[poleHighIdx].high;
   const poleSize   = poleTop - poleBottom;
-
   if (poleSize <= 0) return { valid: false, pct: null };
-
-  // Pullback: lowest low after the pole high to current price
-  const afterPole    = recent.slice(poleHighIdx + 1);
-  const pullbackLow  = Math.min(...afterPole.map(c => c.low));
-  const pullbackSize = poleTop - pullbackLow;
-  const pullbackPct  = (pullbackSize / poleSize) * 100;
-
-  return {
-    valid: pullbackPct <= 50,
-    pct:   pullbackPct
-  };
+  const afterPole   = recent.slice(poleHighIdx + 1);
+  const pullbackLow = Math.min(...afterPole.map(c => c.low));
+  const pullbackPct = ((poleTop - pullbackLow) / poleSize) * 100;
+  return { valid: pullbackPct <= 50, pct: pullbackPct };
 }
 
-// VWAP break during consolidation
-// Detects if price crossed below VWAP within the last 5 candles while consolidating
 function checkVWAPBreakDuringConsolidation(candles, vwap) {
   if (candles.length < 6) return false;
-
-  const window = candles.slice(-6, -1); // last 5 completed candles
-
-  // Consolidation: candles not swinging wildly — range < 3% of price
+  const window   = candles.slice(-6, -1);
   const avgClose = window.reduce((s, c) => s + c.close, 0) / window.length;
   const maxHigh  = Math.max(...window.map(c => c.high));
   const minLow   = Math.min(...window.map(c => c.low));
-  const swing    = (maxHigh - minLow) / avgClose;
-  const isConsolidating = swing < 0.03;
-
-  if (!isConsolidating) return false;
-
-  // Any candle in the window closed below VWAP
+  if ((maxHigh - minLow) / avgClose >= 0.03) return false;
   return window.some(c => c.close < vwap);
 }
 
@@ -277,7 +243,6 @@ async function buildSignals(symbol) {
   if (!quote || candles5m.length < 30) return null;
 
   const price      = quote.lastPrice;
-  const openPrice  = quote.openPrice;
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
 
@@ -292,24 +257,34 @@ async function buildSignals(symbol) {
   const pullback    = checkPullback(candles5m);
   const vwapBreak   = checkVWAPBreakDuringConsolidation(candles5m, vwap);
 
+  // Histogram: negative = bearish momentum, positive = bullish
+  const histValue  = macd?.histogram ?? null;
+  const histNeg    = histValue !== null ? histValue < 0 : false;
+  const histDetail = histValue !== null
+    ? `HIST ${histValue >= 0 ? '+' : ''}${(histValue / price * 10000).toFixed(2)}%`
+    : 'insufficient data';
+
+  const currClose = candles5m[candles5m.length - 1].close;
+  const prevLow   = candles5m[candles5m.length - 2].low;
+
   return {
     symbol,
     price,
     buy: {
-      up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10,  detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP (5-min)?', value: price > vwap,      detail: `VWAP $${vwap?.toFixed(2)}` },
-      ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,       detail: `EMA $${ema9?.toFixed(2)}` },
-      volDry:    { label: 'Volume dried up?',          value: volDry,            detail: 'prev < 50% avg' },
-      volSurge:  { label: 'Volume surge on candle?',   value: volSurge,          detail: 'cur > 150% avg' },
-      pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,    detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
+      up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
+      aboveVWAP: { label: 'Price above VWAP (5-min)?', value: price > vwap,     detail: `VWAP $${vwap?.toFixed(2)}` },
+      ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,      detail: `EMA $${ema9?.toFixed(2)}` },
+      volDry:    { label: 'Volume dried up?',           value: volDry,           detail: 'prev < 50% avg' },
+      volSurge:  { label: 'Volume surge on candle?',    value: volSurge,         detail: 'cur > 150% avg' },
+      pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,   detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',              value: price < vwap,   detail: `VWAP $${vwap?.toFixed(2)}` },
-      belowEMA9:  { label: 'Price below 9 EMA?',             value: price < ema9,   detail: `EMA $${ema9?.toFixed(2)}` },
-      macdNeg:    { label: 'MACD negative?',                 value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 1000).toFixed(2)}%` },
-      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: `HIST ${macd?.histogram >= 0 ? '+' : ''}${(macd?.histogram / price * 10000).toFixed(2)}%` },
-      toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,    detail: 'wick > 60% range' },
-      vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,      detail: 'cross below VWAP' },
+      belowVWAP:  { label: 'Price below VWAP?',             value: price < vwap,  detail: `VWAP $${vwap?.toFixed(2)}` },
+      belowEMA9:  { label: 'Price below 9 EMA?',            value: price < ema9,  detail: `EMA $${ema9?.toFixed(2)}` },
+      macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
+      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,   detail: `C $${currClose.toFixed(2)} < L $${prevLow.toFixed(2)}` },
+      toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,   detail: 'wick > 60% range' },
+      vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,     detail: 'cross below VWAP' },
     }
   };
 }
