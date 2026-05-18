@@ -8,6 +8,7 @@ services:
     volumes:
       - /etc/gatekeeper/certs:/certs:ro
       - gatekeeper-data:/data
+      - /home/ark/Gatekeeper/tokens.json:/app/tokens.json
     env_file:
       - .env
     environment:
