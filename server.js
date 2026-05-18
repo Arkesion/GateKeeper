@@ -119,12 +119,13 @@ function calcEMA(candles, period) {
   return ema;
 }
 
-// EMA on a plain number array
+// TOS exponential EMA on a plain number array (first price seeds EMA1)
 function calcEMAFromValues(values, period) {
-  if (values.length < period) return null;
+  if (!values.length) return null;
+  if (values.some(v => !Number.isFinite(v))) return null;
   const k = 2 / (period + 1);
-  let ema = values.slice(0, period).reduce((s, v) => s + v, 0) / period;
-  for (let i = period; i < values.length; i++) {
+  let ema = values[0];
+  for (let i = 1; i < values.length; i++) {
     ema = values[i] * k + ema * (1 - k);
   }
   return ema;
@@ -147,33 +148,38 @@ function calcEMASlope(candles, period) {
   return emaNow > emaPrev;
 }
 
-// Full MACD: line, signal line, histogram
+// Full MACD: line, signal line, histogram (TOS 12/26/9 exponential)
 // histogram > 0 = MACD line above signal = bullish momentum
 function calcMACD(candles) {
-  if (candles.length < 35) return null;
+  if (candles.length < 9) return null;
 
-  // Build MACD line value for each candle starting from candle 26
-  const macdValues = [];
-  for (let i = 26; i <= candles.length; i++) {
-    const slice = candles.slice(0, i);
-    const e12 = calcEMA(slice, 12);
-    const e26 = calcEMA(slice, 26);
-    if (e12 !== null && e26 !== null) {
-      macdValues.push(e12 - e26);
-    }
+  const closes = candles.map(c => c.close);
+  if (closes.some(v => !Number.isFinite(v))) return null;
+
+  const k12 = 2 / 13;
+  const k26 = 2 / 27;
+  let ema12 = closes[0];
+  let ema26 = closes[0];
+  const macdValues = [ema12 - ema26];
+
+  for (let i = 1; i < closes.length; i++) {
+    ema12 = closes[i] * k12 + ema12 * (1 - k12);
+    ema26 = closes[i] * k26 + ema26 * (1 - k26);
+    macdValues.push(ema12 - ema26);
   }
 
   if (macdValues.length < 9) return null;
 
-  const macdLine = macdValues[macdValues.length - 1];
-  const signal   = calcEMAFromValues(macdValues, 9);
+  const macdLine  = macdValues[macdValues.length - 1];
+  const signal    = calcEMAFromValues(macdValues, 9);
   if (signal === null) return null;
 
-  return {
-    line:      macdLine,
-    signal:    signal,
-    histogram: macdLine - signal
-  };
+  const histogram = macdLine - signal;
+  console.log(
+    `MACD line=${macdLine.toFixed(4)} signal=${signal.toFixed(4)} histogram=${histogram.toFixed(4)}`
+  );
+
+  return { line: macdLine, signal, histogram };
 }
 
 function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
