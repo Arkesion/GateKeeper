@@ -264,6 +264,8 @@ async function buildSignals(symbol) {
 
   if (!quote || candles5m.length < 30) return null;
 
+  console.log(`${symbol}: ${candles5m.length} candles, MACD raw: ${calcMACD(candles5m)}`);
+
   const price      = quote.lastPrice;
   const openPrice  = quote.openPrice;
   const prevClose  = quote.closePrice;
