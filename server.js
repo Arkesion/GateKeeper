@@ -161,10 +161,21 @@ function calcEMASlope(candles, period) {
 }
 
 function calcMACD(candles) {
-  if (candles.length < 26) return null;
-  const ema12 = calcEMA(candles, 12);
-  const ema26 = calcEMA(candles, 26);
-  return ema12 - ema26;
+  if (candles.length < 35) return null;
+  const ema12    = calcEMA(candles, 12);
+  const ema26    = calcEMA(candles, 26);
+  const macdLine = ema12 - ema26;
+  // Signal line = 9 EMA of MACD values
+  const macdHistory = candles.slice(-35).map((_, i, arr) => {
+    const slice = arr.slice(0, i + 1);
+    if (slice.length < 26) return null;
+    const e12 = calcEMA(slice, 12);
+    const e26 = calcEMA(slice, 26);
+    return e12 - e26;
+  }).filter(v => v !== null);
+  const signal    = calcEMA(macdHistory.map((v, i) => ({ close: v })), 9);
+  const histogram = macdLine - signal;
+  return { line: macdLine, signal, histogram };
 }
 
 function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
@@ -288,15 +299,15 @@ async function buildSignals(symbol) {
       up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10,  detail: `${dayGainPct.toFixed(1)}%` },
       aboveVWAP: { label: 'Price above VWAP (5-min)?', value: price > vwap,      detail: `VWAP $${vwap?.toFixed(2)}` },
       ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,       detail: `EMA $${ema9?.toFixed(2)}` },
-      volDry:    { label: 'Volume dried up?',           value: volDry,            detail: 'prev < 50% avg' },
-      volSurge:  { label: 'Volume surge on candle?',    value: volSurge,          detail: 'cur > 150% avg' },
+      volDry:    { label: 'Volume dried up?',          value: volDry,            detail: 'prev < 50% avg' },
+      volSurge:  { label: 'Volume surge on candle?',   value: volSurge,          detail: 'cur > 150% avg' },
       pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,    detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
       belowVWAP:  { label: 'Price below VWAP?',              value: price < vwap,   detail: `VWAP $${vwap?.toFixed(2)}` },
       belowEMA9:  { label: 'Price below 9 EMA?',             value: price < ema9,   detail: `EMA $${ema9?.toFixed(2)}` },
-      macdNeg:     { label: 'MACD negative?',                value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 1000).toFixed(2)}%` },
-      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: `C $${candles5m[candles5m.length-1].close.toFixed(2)} < L $${candles5m[candles5m.length-2].low.toFixed(2)}` },
+      macdNeg:    { label: 'MACD negative?',                 value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 1000).toFixed(2)}%` },
+      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: `HIST ${macd?.histogram >= 0 ? '+' : ''}${(macd?.histogram / price * 10000).toFixed(2)}%` },
       toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,    detail: 'wick > 60% range' },
       vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,      detail: 'cross below VWAP' },
     }
