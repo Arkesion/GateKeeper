@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs')
+const https = require('https');
 
 const app = express();
 const PORT = 3000;
@@ -231,41 +233,22 @@ app.get('/api/status', (req, res) => {
 
 app.use(express.static('public'));
 
-// --Temprorary Workaround---------------------------------------
-app.get('/manual-auth', async (req, res) => {
-    const code = req.query.code;
-    if (!code) return res.send('Add ?code=YOUR_CODE to the URL');
-    
-    try {
-      const response = await axios.post(SCHWAB_TOKEN_URL,
-        new URLSearchParams({
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: 'https://127.0.0.1'
-        }),
-        {
-          headers: {
-            'Authorization': `Basic ${basicAuth}`,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
-      );
-      accessToken = response.data.access_token;
-      refreshToken = response.data.refresh_token;
-      tokenExpiry = Date.now() + (response.data.expires_in * 1000);
-      console.log('✅ Manually authenticated');
-      res.send('Authenticated! Close this and go back to GateKeeper.');
-    } catch (err) {
-      console.error(err.response?.data || err.message);
-      res.send('Failed — code may be expired. Try login again.');
-    }
-  });
-
-
 // ── START ─────────────────────────────────────────────────────
+const certPath = process.env.CERT_PATH;
+const keyPath  = process.env.KEY_PATH;
 
-app.listen(PORT, () => {
+if (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+  const httpsOptions = {
+    cert: fs.readFileSync(certPath),
+    key:  fs.readFileSync(keyPath)
+  };
+  https.createServer(httpsOptions, app).listen(PORT, () => {
+    console.log(`\n🚀 KQ-GateKeeper running at https://gatekeeper.veilforge.org`);
+    console.log(`🔐 Login at https://gatekeeper.veilforge.org/login\n`);
+  });
+} else {
+  app.listen(PORT, () => {
     console.log(`\n🚀 KQ-GateKeeper running at http://localhost:${PORT}`);
     console.log(`🔐 Login at http://localhost:${PORT}/login\n`);
-    console.log(`Open your browser and go to: http://localhost:3000`);
   });
+}

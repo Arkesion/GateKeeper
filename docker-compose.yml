@@ -1,0 +1,18 @@
+services:
+  gatekeeper:
+    build: .
+    container_name: gatekeeper
+    restart: unless-stopped
+    ports:
+      - "443:3000"
+    volumes:
+      - /etc/gatekeeper/certs:/certs:ro
+      - gatekeeper-data:/data
+    env_file:
+      - .env
+    environment:
+      - CERT_PATH=/certs/cert.pem
+      - KEY_PATH=/certs/key.pem
+
+volumes:
+  gatekeeper-data:
