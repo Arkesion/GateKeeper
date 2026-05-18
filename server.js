@@ -294,9 +294,9 @@ async function buildSignals(symbol) {
       pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,    detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',             value: price < vwap,   detail: `VWAP $${vwap?.toFixed(2)}` },
-      belowEMA9:  { label: 'Price below 9 EMA?',            value: price < ema9,   detail: `EMA $${ema9?.toFixed(2)}` },
-      macdNeg:    { label: 'MACD negative?',                 value: macd < 0,       detail: `MACD ${macd?.toFixed(3)}` },
+      belowVWAP:  { label: 'Price below VWAP?',              value: price < vwap,   detail: `VWAP $${vwap?.toFixed(2)}` },
+      belowEMA9:  { label: 'Price below 9 EMA?',             value: price < ema9,   detail: `EMA $${ema9?.toFixed(2)}` },
+     macdNeg:     { label: 'MACD negative?',                 value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 10000).toFixed(2)}%` },
       candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: 'exit signal' },
       toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,    detail: 'wick > 60% range' },
       vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,      detail: 'cross below VWAP' },
