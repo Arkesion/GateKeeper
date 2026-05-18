@@ -19,6 +19,7 @@
       height: 100vh;
       display: flex;
       flex-direction: column;
+      transform-origin: top left;
     }
 
     #ticker {
@@ -35,7 +36,7 @@
     #ticker-input {
       background: transparent;
       border: none;
-      border-bottom: 2px solid #333;
+      border-bottom: 2px solid #555;
       color: #ffffff;
       font-family: 'Courier New', monospace;
       font-size: 72px;
@@ -59,11 +60,12 @@
     }
 
     .divider {
-      color: #222;
+      color: #555;
       text-align: center;
       font-size: 12px;
       padding: 2px 0;
       letter-spacing: 2px;
+      border-top: 1px solid #444;
     }
 
     #main {
@@ -84,7 +86,7 @@
       display: flex;
       flex-direction: column;
       padding: 10px 16px;
-      border-right: 1px solid #111;
+      border-right: 1px solid #444;
       overflow: hidden;
     }
 
@@ -102,7 +104,7 @@
     .sell-header { color: #ff3333; }
 
     .col-divider {
-      border-top: 1px dashed #222;
+      border-top: 1px dashed #444;
       margin-bottom: 10px;
     }
 
@@ -111,7 +113,7 @@
       justify-content: space-between;
       align-items: center;
       padding: 9px 0;
-      border-bottom: 1px solid #0a0a0a;
+      border-bottom: 1px solid #1a1a1a;
       gap: 8px;
     }
 
@@ -127,11 +129,13 @@
       font-weight: bold;
       min-width: 24px;
       text-align: center;
+      flex-shrink: 0;
     }
 
     .signal-label {
       font-size: 18px;
       flex: 1;
+      white-space: nowrap;
     }
 
     .signal-detail {
@@ -139,6 +143,8 @@
       opacity: 0.7;
       text-align: right;
       min-width: 100px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .row-pass { color: #00ff41; }
@@ -147,7 +153,7 @@
 
     #verdicts {
       display: flex;
-      border-top: 1px dashed #222;
+      border-top: 1px solid #444;
     }
 
     .verdict {
@@ -157,7 +163,7 @@
       font-size: 16px;
       font-weight: bold;
       letter-spacing: 2px;
-      border-right: 1px solid #111;
+      border-right: 1px solid #444;
     }
 
     .verdict:last-child { border-right: none; }
@@ -171,7 +177,7 @@
       align-items: center;
       justify-content: center;
       padding: 10px 16px;
-      border-top: 1px solid #111;
+      border-top: 1px solid #444;
       background: #050505;
     }
 
@@ -185,7 +191,7 @@
 
     #live-dot {
       font-size: 13px;
-      color: #444;
+      color: #555;
       margin-left: 20px;
     }
 
@@ -201,7 +207,7 @@
     }
 
     #authPrompt p {
-      color: #444;
+      color: #555;
       font-size: 14px;
       letter-spacing: 2px;
     }
@@ -249,6 +255,25 @@
   let pollInterval  = null;
   let authenticated = false;
 
+  // ── AUTO SCALE ─────────────────────────────────────────────
+  function autoScale() {
+    const app = document.getElementById('app');
+    app.style.transform = '';
+    app.style.width     = '100%';
+    app.style.height    = '100vh';
+    const scaleX = window.innerWidth  / app.scrollWidth;
+    const scaleY = window.innerHeight / app.scrollHeight;
+    const scale  = Math.min(scaleX, scaleY);
+    if (scale < 1) {
+      app.style.transform = `scale(${scale})`;
+      app.style.width     = `${100 / scale}%`;
+      app.style.height    = `${100 / scale}vh`;
+    }
+  }
+
+  window.addEventListener('resize', autoScale);
+
+  // ── CLOCK ──────────────────────────────────────────────────
   function startClock() {
     function tick() {
       document.getElementById('clock').textContent =
@@ -262,6 +287,7 @@
 
   startClock();
 
+  // ── TICKER EDIT ────────────────────────────────────────────
   function startTickerEdit() {
     if (!authenticated) return;
     const display = document.getElementById('ticker');
@@ -291,6 +317,7 @@
     }
   }
 
+  // ── AUTH ───────────────────────────────────────────────────
   async function checkAuth() {
     const res  = await fetch('/api/status');
     const data = await res.json();
@@ -332,8 +359,10 @@
       </div>
     `;
     document.getElementById('live-dot').textContent = '● READY';
+    autoScale();
   }
 
+  // ── SIGNALS ────────────────────────────────────────────────
   async function fetchSignals() {
     if (!currentSymbol) return;
     try {
@@ -415,6 +444,7 @@
   }
 
   checkAuth();
+  autoScale();
 </script>
 </body>
 </html>
