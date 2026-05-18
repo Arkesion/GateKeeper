@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KQ-GateKeeper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      color: #00ff41;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #ticker {
+      text-align: center;
+      font-size: 42px;
+      font-weight: bold;
+      color: #ffffff;
+      padding: 10px 0 6px;
+      letter-spacing: 6px;
+    }
+
+    #price {
+      text-align: center;
+      font-size: 16px;
+      color: #aaaaaa;
+      padding-bottom: 6px;
+    }
+
+    .divider {
+      color: #333;
+      text-align: center;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 2px 0;
+    }
+
+    #columns {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 8px 10px;
+      border-right: 1px solid #1a1a1a;
+    }
+
+    .col:last-child { border-right: none; }
+
+    .col-header {
+      text-align: center;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 3px;
+      padding-bottom: 6px;
+    }
+
+    .buy-header  { color: #00ff41; }
+    .sell-header { color: #ff3333; }
+
+    .col-divider {
+      border-top: 1px dashed #333;
+      margin-bottom: 8px;
+    }
+
+    .signal-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      border-bottom: 1px solid #0a0a0a;
+    }
+
+    .signal-label { color: #cccccc; flex: 1; }
+    .signal-detail { color: #555; font-size: 10px; margin: 0 6px; }
+
+    .signal-pass { color: #00ff41; font-weight: bold; }
+    .signal-fail { color: #ff3333; font-weight: bold; }
+
+    .sell-pass { color: #ff3333; font-weight: bold; }
+    .sell-fail { color: #00ff41; font-weight: bold; }
+
+    #verdicts {
+      display: flex;
+      border-top: 1px dashed #333;
+    }
+
+    .verdict {
+      flex: 1;
+      text-align: center;
+      padding: 8px 4px;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      border-right: 1px solid #1a1a1a;
+    }
+
+    .verdict:last-child { border-right: none; }
+    .verdict-buy  { color: #00ff41; }
+    .verdict-hold { color: #ffaa00; }
+    .verdict-sell { color: #ff3333; }
+    .verdict-wait { color: #555555; }
+
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-top: 1px solid #1a1a1a;
+      background: #050505;
+    }
+
+    #symbolInput {
+      background: #000;
+      border: 1px solid #333;
+      color: #00ff41;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      padding: 4px 8px;
+      width: 90px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    #symbolInput:focus { outline: none; border-color: #00ff41; }
+
+    button {
+      background: #000;
+      border: 1px solid #333;
+      color: #888;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+
+    button:hover { border-color: #00ff41; color: #00ff41; }
+
+    #status {
+      margin-left: auto;
+      font-size: 10px;
+      color: #444;
+    }
+
+    #authPrompt {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    #authPrompt p { color: #555; font-size: 12px; }
+    #authBtn {
+      border-color: #00ff41;
+      color: #00ff41;
+      padding: 8px 20px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ticker">---</div>
+  <div id="price">waiting...</div>
+  <div class="divider">════════════════════════════════════════════════════</div>
+
+  <div id="main">
+    <div id="authPrompt">
+      <p>NOT AUTHENTICATED</p>
+      <button id="authBtn" onclick="authenticate()">[ LOGIN WITH SCHWAB ]</button>
+      <p id="authStatus"></p>
+    </div>
+  </div>
+
+  <div id="controls">
+    <input id="symbolInput" type="text" placeholder="TICKER" maxlength="6"
+      onkeydown="if(event.key==='Enter') setSymbol()">
+    <button onclick="setSymbol()">[ SET ]</button>
+    <span id="status">● OFFLINE</span>
+  </div>
+
+<script>
+  let currentSymbol = null;
+  let pollInterval = null;
+  let authenticated = false;
+
+  async function checkAuth() {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    authenticated = data.authenticated;
+    if (authenticated) showPanel();
+  }
+
+  function authenticate() {
+    document.getElementById('authStatus').textContent = 'Opening Schwab login...';
+    window.open('/login', '_blank', 'width=600,height=700');
+    // Poll until authenticated
+    const check = setInterval(async () => {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      if (data.authenticated) {
+        clearInterval(check);
+        authenticated = true;
+        showPanel();
+      }
+    }, 2000);
+  }
+
+  function showPanel() {
+    document.getElementById('main').innerHTML = `
+      <div id="columns">
+        <div class="col" id="buyCol">
+          <div class="col-header buy-header">BUY</div>
+          <div class="col-divider"></div>
+          <div id="buyRows"></div>
+        </div>
+        <div class="col" id="sellCol">
+          <div class="col-header sell-header">SELL</div>
+          <div class="col-divider"></div>
+          <div id="sellRows"></div>
+        </div>
+      </div>
+      <div id="verdicts">
+        <div class="verdict" id="buyVerdict">VERDICT: —</div>
+        <div class="verdict" id="sellVerdict">VERDICT: —</div>
+      </div>
+    `;
+    document.getElementById('status').textContent = '● READY';
+  }
+
+  function setSymbol() {
+    const val = document.getElementById('symbolInput').value.trim().toUpperCase();
+    if (!val || !authenticated) return;
+    currentSymbol = val;
+    document.getElementById('ticker').textContent = val;
+    document.getElementById('status').textContent = '● POLLING';
+    if (pollInterval) clearInterval(pollInterval);
+    fetchSignals();
+    pollInterval = setInterval(fetchSignals, 500);
+  }
+
+  async function fetchSignals() {
+    if (!currentSymbol) return;
+    try {
+      const res = await fetch(`/api/signals/${currentSymbol}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      renderSignals(data);
+    } catch (e) {
+      document.getElementById('status').textContent = '● ERROR';
+    }
+  }
+
+  function renderSignals(data) {
+    document.getElementById('price').textContent = `$${data.price?.toFixed(2) || '---'}`;
+
+    // BUY rows
+    const buyRows = document.getElementById('buyRows');
+    buyRows.innerHTML = '';
+    let buyPass = 0;
+    for (const [, sig] of Object.entries(data.buy)) {
+      if (sig.value) buyPass++;
+      buyRows.innerHTML += `
+        <div class="signal-row">
+          <span class="signal-label">${sig.label}</span>
+          <span class="signal-detail">${sig.detail}</span>
+          <span class="${sig.value ? 'signal-pass' : 'signal-fail'}">${sig.value ? '✓' : '✗'}</span>
+        </div>`;
+    }
+
+    // SELL rows
+    const sellRows = document.getElementById('sellRows');
+    sellRows.innerHTML = '';
+    let sellFire = 0;
+    for (const [, sig] of Object.entries(data.sell)) {
+      if (sig.value) sellFire++;
+      sellRows.innerHTML += `
+        <div class="signal-row">
+          <span class="signal-label">${sig.label}</span>
+          <span class="signal-detail">${sig.detail}</span>
+          <span class="${sig.value ? 'sell-pass' : 'sell-fail'}">${sig.value ? '✓' : '✗'}</span>
+        </div>`;
+    }
+
+    // Verdicts
+    const buyV = document.getElementById('buyVerdict');
+    const sellV = document.getElementById('sellVerdict');
+
+    if (buyPass === 5) {
+      buyV.textContent = '⚡ SETUP READY — WATCH TAPE';
+      buyV.className = 'verdict verdict-buy';
+    } else {
+      buyV.textContent = `VERDICT: ${buyPass}/5 CONDITIONS MET`;
+      buyV.className = 'verdict verdict-wait';
+    }
+
+    if (sellFire >= 2) {
+      sellV.textContent = '🔴 EXIT SIGNAL — SELL NOW';
+      sellV.className = 'verdict verdict-sell';
+    } else if (sellFire === 1) {
+      sellV.textContent = '⚠ CAUTION — WATCH TAPE';
+      sellV.className = 'verdict verdict-hold';
+    } else {
+      sellV.textContent = 'VERDICT: HOLD ✓';
+      sellV.className = 'verdict verdict-buy';
+    }
+
+    document.getElementById('status').textContent = `● LIVE ${new Date().toLocaleTimeString()}`;
+  }
+
+  checkAuth();
+</script>
+</body>
+</html>
