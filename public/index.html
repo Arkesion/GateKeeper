@@ -182,7 +182,7 @@
     }
 
     #clock {
-      font-size: 36px;
+      font-size: 72px;
       font-weight: bold;
       color: #ffffff;
       letter-spacing: 4px;
@@ -392,11 +392,9 @@
       const cls = sig.value ? 'row-pass' : 'row-fail';
       buyRows.innerHTML += `
         <div class="signal-row ${cls}">
-          <div class="signal-left">
-            <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
-            <span class="signal-label">${sig.label}</span>
-          </div>
+          <span class="signal-label">${sig.label}</span>
           <span class="signal-detail">${sig.detail}</span>
+          <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
         </div>`;
     }
 
@@ -408,11 +406,9 @@
       const cls = sig.value ? 'row-fail' : 'row-pass';
       sellRows.innerHTML += `
         <div class="signal-row ${cls}">
-          <div class="signal-left">
-            <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
-            <span class="signal-label">${sig.label}</span>
-          </div>
+          <span class="signal-label">${sig.label}</span>
           <span class="signal-detail">${sig.detail}</span>
+          <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
         </div>`;
     }
 
