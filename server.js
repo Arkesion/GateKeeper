@@ -266,7 +266,8 @@ async function buildSignals(symbol) {
 
   const price      = quote.lastPrice;
   const openPrice  = quote.openPrice;
-  const dayGainPct = ((price - openPrice) / openPrice) * 100;
+  const prevClose  = quote.closePrice;
+  const dayGainPct = ((price - prevClose) / prevClose) * 100;
 
   const vwap        = calcVWAP(candles5m);
   const ema9        = calcEMA(candles5m, 9);
