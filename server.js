@@ -257,14 +257,13 @@ function checkVWAPBreakDuringConsolidation(candles, vwap) {
 }
 
 async function buildSignals(symbol) {
-  const [quote, candles5m] = await Promise.all([
+  const [quote, candles5m, candles1m] = await Promise.all([
     getQuote(symbol),
-    getPriceHistory(symbol, 'day', 5, 'minute', 5)
+    getPriceHistory(symbol, 'day', 1, 'minute', 5),
+    getPriceHistory(symbol, 'day', 1, 'minute', 1)
   ]);
 
   if (!quote || candles5m.length < 30) return null;
-
-  console.log(`${symbol}: ${candles5m.length} candles, MACD raw: ${calcMACD(candles5m)}`);
 
   const price      = quote.lastPrice;
   const openPrice  = quote.openPrice;
@@ -274,7 +273,7 @@ async function buildSignals(symbol) {
   const vwap        = calcVWAP(candles5m);
   const ema9        = calcEMA(candles5m, 9);
   const ema9Sloping = calcEMASlope(candles5m, 9);
-  const macd        = calcMACD(candles5m);
+  const macd        = calcMACD(candles1m);
   const volDry      = checkVolumeDry(candles5m);
   const volSurge    = checkVolumeSurge(candles5m);
   const toppingTail = checkToppingTail(candles5m);
@@ -296,8 +295,8 @@ async function buildSignals(symbol) {
     sell: {
       belowVWAP:  { label: 'Price below VWAP?',              value: price < vwap,   detail: `VWAP $${vwap?.toFixed(2)}` },
       belowEMA9:  { label: 'Price below 9 EMA?',             value: price < ema9,   detail: `EMA $${ema9?.toFixed(2)}` },
-     macdNeg:     { label: 'MACD negative?',                 value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 10000).toFixed(2)}%` },
-      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: 'exit signal' },
+      macdNeg:     { label: 'MACD negative?',                value: macd < 0,       detail: `MACD ${macd >= 0 ? '+' : ''}${(macd / price * 1000).toFixed(2)}%` },
+      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,    detail: `C $${candles5m[candles5m.length-1].close.toFixed(2)} < L $${candles5m[candles5m.length-2].low.toFixed(2)}` },
       toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,    detail: 'wick > 60% range' },
       vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,      detail: 'cross below VWAP' },
     }
