@@ -508,7 +508,7 @@ function getCandleUnderSnapshot(candles) {
   const met = closed.close < prior.low;
   const c = closed.close.toFixed(2);
   const l = prior.low.toFixed(2);
-  const detail = met ? `${c} < ${l}` : `${c} ≥ ${l}`;
+  const detail = met ? `C $${c} < $${l} L` : `C $${c} ≥ $${l} L`;
   return { met, detail, closed, prior };
 }
 
