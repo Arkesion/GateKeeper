@@ -176,12 +176,14 @@ function getSessionConfig(now = Date.now()) {
 
   switch (session) {
     case 'PRE':
+      const preStart = utcFromEtDateTime(today, 4, 0);
+      const preEnd   = utcFromEtDateTime(today, 9, 30);
       return {
         session,
         tag: 'PRE',
         needExtendedHours: true,
-        vwapStartMs: utcFromEtDateTime(today, 4, 0),
-        filterCandle: c => onToday(c) && inMins(c, PRE_OPEN_ET, RTH_OPEN_ET)
+        vwapStartMs: preStart,
+        filterCandle: c => c.datetime >= preStart && c.datetime < preEnd
       };
     case 'RTH':
       return {
