@@ -100,9 +100,9 @@ async function getQuote(symbol) {
 async function getPriceHistory(symbol, periodType, period, frequencyType, frequency, opts = {}) {
   await ensureToken();
   const { needExtendedHoursData = false, startDate, endDate } = opts;
-  
+
   const params = { symbol, frequencyType, frequency, needExtendedHoursData };
-  
+
   // Only include periodType/period when NOT using startDate/endDate
   // Schwab ignores date range when period params are present
   if (startDate != null) {
@@ -144,7 +144,6 @@ function getEtHourMinute(ms) {
   };
 }
 
-// UTC ms for a given calendar day + clock time in New York (handles DST)
 function utcFromEtDateTime(dateStr, hour, minute) {
   let lo = Date.parse(`${dateStr}T17:00:00.000Z`) - 36 * 60 * 60 * 1000;
   let hi = Date.parse(`${dateStr}T17:00:00.000Z`) + 36 * 60 * 60 * 1000;
@@ -160,23 +159,20 @@ function utcFromEtDateTime(dateStr, hour, minute) {
   return hi;
 }
 
-const ETH_OPEN_ET   = 4 * 60;        // Gatekeeper operating day: 4:00 AM ET
-const ETH_CLOSE_ET  = 20 * 60;       // through 8:00 PM ET
-const PRE_OPEN_ET   = ETH_OPEN_ET;   // PRE session starts at ETH open
-const RTH_OPEN_ET   = 9 * 60 + 30;   // 9:30 AM
-const RTH_CLOSE_ET  = 16 * 60;       // 4:00 PM
-const POST_CLOSE_ET = ETH_CLOSE_ET;  // POST ends at ETH close
-
-// Schwab pricehistory often omits 4:00–7:00 AM on the *current* day (TOS still shows it)
-const SCHWAB_PRE_DATA_ET = 7 * 60;
+const ETH_OPEN_ET   = 4 * 60;
+const ETH_CLOSE_ET  = 20 * 60;
+const PRE_OPEN_ET   = ETH_OPEN_ET;
+const RTH_OPEN_ET   = 9 * 60 + 30;
+const RTH_CLOSE_ET  = 16 * 60;
+const POST_CLOSE_ET = ETH_CLOSE_ET;
 
 function getEthDayBounds(now = Date.now()) {
   const today = getEtDateString(now);
   return {
     today,
     ethStartMs: utcFromEtDateTime(today, 4, 0),
-    ethEndMs: utcFromEtDateTime(today, 20, 0),
-    capEndMs: Math.min(now, utcFromEtDateTime(today, 20, 0))
+    ethEndMs:   utcFromEtDateTime(today, 20, 0),
+    capEndMs:   Math.min(now, utcFromEtDateTime(today, 20, 0))
   };
 }
 
@@ -190,12 +186,11 @@ function getEtMinutes(ms) {
   return h * 60 + m;
 }
 
-// PRE (4:00–9:30) | RTH (9:30–16:00) | POST (16:00–20:00) | CLOSED (outside 4 AM–8 PM)
 function getMarketSession(now = Date.now()) {
   if (!isGatekeeperOpen(now)) return 'CLOSED';
   const mins = getEtMinutes(now);
   if (mins >= RTH_OPEN_ET && mins < RTH_CLOSE_ET) return 'RTH';
-  if (mins >= PRE_OPEN_ET && mins < RTH_OPEN_ET) return 'PRE';
+  if (mins >= PRE_OPEN_ET && mins < RTH_OPEN_ET)  return 'PRE';
   if (mins >= RTH_CLOSE_ET && mins < POST_CLOSE_ET) return 'POST';
   return 'CLOSED';
 }
@@ -205,7 +200,7 @@ function getSessionConfig(now = Date.now()) {
   const today = getEtDateString(now);
 
   const onToday = c => getEtDateString(c.datetime) === today;
-  const inMins = (c, lo, hi) => {
+  const inMins  = (c, lo, hi) => {
     const mins = getEtMinutes(c.datetime);
     return mins >= lo && mins < hi;
   };
@@ -248,7 +243,6 @@ function getSessionConfig(now = Date.now()) {
   }
 }
 
-// Day VWAP anchored at 4:00 AM ET through now (capped at 8:00 PM)
 function getVwapConfig(now = Date.now()) {
   const session = getMarketSession(now);
   if (session === 'CLOSED') return getSessionConfig(now);
@@ -277,11 +271,9 @@ function formatEtHm(ms) {
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-// True when Schwab omitted early ETH (typical 4–7 AM gap on the current day)
 function isVwapPartialEth(candles, anchorMs) {
   if (!candles.length) return true;
-  const gapMs = 30 * 60 * 1000;
-  return candles[0].datetime > anchorMs + gapMs;
+  return candles[0].datetime > anchorMs + 30 * 60 * 1000;
 }
 
 function formatVwapTag(sessionTag, partialEth) {
@@ -296,13 +288,13 @@ function sortCandles(candles) {
 
 function filterToMostRecentTradingDay(candles, filterCandle) {
   if (!candles.length) return [];
-  const sorted = sortCandles(candles);
+  const sorted  = sortCandles(candles);
   const lastDay = getEtDateString(sorted[sorted.length - 1].datetime);
   return sorted.filter(c => getEtDateString(c.datetime) === lastDay && filterCandle(c));
 }
 
 async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookbackDays = 2) {
-  const endDate = Date.now();
+  const endDate   = Date.now();
   const startDate = Math.min(cfg.vwapStartMs, endDate - lookbackDays * 24 * 60 * 60 * 1000);
   const raw = await getPriceHistory(symbol, 'day', Math.max(lookbackDays, 2), frequencyType, frequency, {
     startDate,
@@ -325,7 +317,6 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
   return candles;
 }
 
-// 5m bars, requested from 4:00 AM ET (Schwab may only return ~7:00 AM+ on the current day)
 async function getVwapCandles(symbol, cfg = getVwapConfig()) {
   const endDate = Date.now();
   const fetch5m = startMs =>
@@ -337,8 +328,7 @@ async function getVwapCandles(symbol, cfg = getVwapConfig()) {
 
   let candles = sortCandles(await fetch5m(cfg.vwapStartMs)).filter(cfg.filterCandle);
 
-  const maxGapMs = 30 * 60 * 1000;
-  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + maxGapMs) {
+  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + 30 * 60 * 1000) {
     const wide = sortCandles(await fetch5m(endDate - 5 * 24 * 60 * 60 * 1000)).filter(cfg.filterCandle);
     if (wide.length > candles.length) candles = wide;
   }
@@ -347,24 +337,23 @@ async function getVwapCandles(symbol, cfg = getVwapConfig()) {
 
   return {
     candles,
-    tag: formatVwapTag(cfg.tag, partialEth),
-    session: cfg.session,
-    barSize: '5m',
-    bucketMs: 5 * 60 * 1000,
+    tag:        formatVwapTag(cfg.tag, partialEth),
+    session:    cfg.session,
+    barSize:    '5m',
+    bucketMs:   5 * 60 * 1000,
     partialEth,
     firstBarMs: candles[0]?.datetime ?? null
   };
 }
 
-// 5-min bars for EMA / volume / candle rules (same session window as price action)
 async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
   const candles = await fetchSessionCandles(symbol, 5, 'minute', cfg, 3);
   return { candles, session: cfg.session };
 }
 
-// 1-min for MACD: last ~2 sessions, extended hours (matches TOS 1-min + ETH)
-async function getMacdMinuteCandles(symbol) {
-  const endDate = Date.now();
+// 1-min candles: 2 days extended hours — used for MACD, volume, pullback, candle checks
+async function getSignal1mCandles(symbol) {
+  const endDate   = Date.now();
   const startDate = endDate - 2 * 24 * 60 * 60 * 1000;
   return getPriceHistory(symbol, 'day', 10, 'minute', 1, {
     startDate,
@@ -373,83 +362,52 @@ async function getMacdMinuteCandles(symbol) {
   });
 }
 
-// Patch the active bar from the live quote (bucketMs = 60_000 for 1m, 300_000 for 5m)
 function applyLiveQuoteToCandles(candles, quote, bucketMs = 60 * 1000) {
-  if (!candles?.length || !quote?.lastPrice || !Number.isFinite(quote.lastPrice)) {
-    return candles;
-  }
+  if (!candles?.length || !quote?.lastPrice || !Number.isFinite(quote.lastPrice)) return candles;
   const sorted = candles.length > 1 && candles[0].datetime
     ? [...candles].sort((a, b) => a.datetime - b.datetime)
     : [...candles];
-  const last = sorted[sorted.length - 1];
+  const last  = sorted[sorted.length - 1];
   const qTime = quote.quoteTime || quote.tradeTime;
   const price = quote.lastPrice;
 
-  if (!qTime) {
-    last.close = price;
-    return sorted;
-  }
+  if (!qTime) { last.close = price; return sorted; }
 
-  const qBucket = Math.floor(qTime / bucketMs) * bucketMs;
+  const qBucket    = Math.floor(qTime / bucketMs) * bucketMs;
   const lastBucket = Math.floor(last.datetime / bucketMs) * bucketMs;
 
   if (qBucket === lastBucket) {
     last.close = price;
     if (last.high != null) last.high = Math.max(last.high, price);
-    if (last.low != null) last.low = Math.min(last.low, price);
+    if (last.low  != null) last.low  = Math.min(last.low,  price);
   } else if (qBucket > lastBucket) {
-    sorted.push({
-      datetime: qBucket,
-      open: price,
-      high: price,
-      low: price,
-      close: price,
-      volume: 0
-    });
+    sorted.push({ datetime: qBucket, open: price, high: price, low: price, close: price, volume: 0 });
   }
   return sorted;
 }
 
 function shouldPatchQuote(candles, quote, bucketMs = 60 * 1000) {
   if (!candles?.length || !quote?.quoteTime) return false;
-  const last = candles[candles.length - 1];
-  return quote.quoteTime > last.datetime + bucketMs;
+  return quote.quoteTime > candles[candles.length - 1].datetime + bucketMs;
 }
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
 
-// ~4 significant figures; scales decimals for NVDA-scale vs sub-penny histograms
 function formatMacdValue(value) {
   if (!Number.isFinite(value)) return 'n/a';
   if (value === 0) return '+0';
-
   const sign = value >= 0 ? '+' : '-';
-  const abs = Math.abs(value);
+  const abs  = Math.abs(value);
   if (abs >= 100) return sign + String(parseFloat(abs.toFixed(1)));
-
   const decimals = Math.min(7, Math.max(2, 3 - Math.floor(Math.log10(abs))));
   return sign + String(parseFloat(abs.toFixed(decimals)));
 }
 
-// Histogram as % of price — comparable across $0.01 names and $500 names (TOS Diff is still $)
 function macdHistogramPct(histogram, price) {
   if (!Number.isFinite(histogram) || !Number.isFinite(price) || price <= 0) return null;
   return (histogram / price) * 100;
 }
 
-function formatMacdPercent(histogram, price) {
-  const pct = macdHistogramPct(histogram, price);
-  if (pct === null) return 'n/a';
-  if (pct === 0) return '+0%';
-
-  const sign = pct >= 0 ? '+' : '';
-  const abs = Math.abs(pct);
-  if (abs >= 1) return sign + parseFloat(pct.toFixed(2)) + '%';
-  if (abs >= 0.01) return sign + parseFloat(pct.toFixed(3)) + '%';
-  return sign + parseFloat(pct.toFixed(4)) + '%';
-}
-
-// Full histogram series (signal EMA applied bar-by-bar, same as TOS Diff)
 function buildMacdHistogramSeries(macdValues) {
   if (macdValues.length < 9) return [];
   const k = 2 / 10;
@@ -462,11 +420,10 @@ function buildMacdHistogramSeries(macdValues) {
   return series;
 }
 
-// How tall the current bar is vs recent peaks on THIS symbol (like TOS auto-scaled MACD pane)
 function macdHistogramStrength(histogram, history, lookback = 390) {
   if (!Number.isFinite(histogram) || !history?.length) return null;
   const window = history.slice(-lookback);
-  const peak = Math.max(...window.map(h => Math.abs(h)), 1e-12);
+  const peak   = Math.max(...window.map(h => Math.abs(h)), 1e-12);
   return (histogram / peak) * 100;
 }
 
@@ -480,11 +437,9 @@ function macdStrengthTier(strength) {
 
 function formatMacdStrength(strength) {
   if (strength === null || !Number.isFinite(strength)) return 'n/a';
-  const sign = strength >= 0 ? '+' : '';
-  return sign + Math.round(strength) + '%';
+  return (strength >= 0 ? '+' : '') + Math.round(strength) + '%';
 }
 
-// Compact panel label: direction + strength vs recent peak (no raw $ histogram)
 function formatMacdHistDetail(histogram, strength, tier) {
   if (!Number.isFinite(histogram)) return 'insufficient data';
   if (!Number.isFinite(strength) || !tier) {
@@ -494,7 +449,6 @@ function formatMacdHistDetail(histogram, strength, tier) {
   return `HIST ${arrow}${Math.round(Math.abs(strength))}% ${tier}`;
 }
 
-// 9 EMA on 5-min closes (TOS exponential — seeds from first close, works with <9 bars)
 function calcEMA(candles, period) {
   if (!candles.length) return null;
   const closes = candles.map(c => c.close);
@@ -502,7 +456,6 @@ function calcEMA(candles, period) {
   return calcEMAFromValues(closes, period);
 }
 
-// TOS exponential EMA on a plain number array (first price seeds EMA1)
 function calcEMAFromValues(values, period) {
   if (!values.length) return null;
   if (values.some(v => !Number.isFinite(v))) return null;
@@ -517,7 +470,7 @@ function calcEMAFromValues(values, period) {
 function calcVWAP(candles) {
   let cumTPV = 0, cumVol = 0;
   for (const c of candles) {
-    const tp = (c.high + c.low + c.close) / 3;
+    const tp  = (c.high + c.low + c.close) / 3;
     if (!Number.isFinite(tp)) continue;
     const vol = Number.isFinite(c.volume) && c.volume > 0 ? c.volume : 0;
     if (vol <= 0) continue;
@@ -535,11 +488,8 @@ function calcEMASlope(candles, period) {
   return emaNow > emaPrev;
 }
 
-// Full MACD: line, signal line, histogram (TOS 12/26/9 exponential)
-// histogram > 0 = MACD line above signal = bullish momentum
 function calcMACD(candles, symbol) {
   if (candles.length < 9) return null;
-
   const sorted = candles.length > 1 && candles[0].datetime
     ? [...candles].sort((a, b) => a.datetime - b.datetime)
     : candles;
@@ -560,18 +510,18 @@ function calcMACD(candles, symbol) {
 
   if (macdValues.length < 9) return null;
 
-  const macdLine  = macdValues[macdValues.length - 1];
-  const signal    = calcEMAFromValues(macdValues, 9);
+  const macdLine       = macdValues[macdValues.length - 1];
+  const signal         = calcEMAFromValues(macdValues, 9);
   if (signal === null) return null;
 
-  const histogram = macdLine - signal;
+  const histogram      = macdLine - signal;
   const histogramSeries = buildMacdHistogramSeries(macdValues);
-  const strength = macdHistogramStrength(histogram, histogramSeries);
+  const strength       = macdHistogramStrength(histogram, histogramSeries);
+  const tier           = macdStrengthTier(strength);
 
-  const tag = symbol ? `${symbol} ` : '';
+  const tag     = symbol ? `${symbol} ` : '';
   const lastBar = sorted[sorted.length - 1];
-  const lastTs = lastBar?.datetime ? new Date(lastBar.datetime).toISOString() : 'n/a';
-  const tier = macdStrengthTier(strength);
+  const lastTs  = lastBar?.datetime ? new Date(lastBar.datetime).toISOString() : 'n/a';
   console.log(
     `${tag}MACD (${sorted.length} bars, last ${lastTs} close=${lastBar?.close}) ` +
     `hist=${formatMacdValue(histogram)} ${tier} ${formatMacdStrength(strength)} of recent peak`
@@ -580,6 +530,9 @@ function calcMACD(candles, symbol) {
   return { line: macdLine, signal, histogram, strength, strengthTier: tier, histogramSeries };
 }
 
+// ── 1-MIN SIGNAL CHECKS ───────────────────────────────────────
+
+// Volume dried up: prev completed 1m bar < 50% of prior 10-bar average
 function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
   if (candles.length < lookback + 2) return false;
   const recent     = candles.slice(-lookback - 2, -2);
@@ -588,6 +541,7 @@ function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
   return prevCandle.volume < avg * threshold;
 }
 
+// Volume surge: current 1m bar > 150% of prior 10-bar average
 function checkVolumeSurge(candles, lookback = 10, threshold = 1.5) {
   if (candles.length < lookback + 1) return false;
   const recent  = candles.slice(-lookback - 1, -1);
@@ -596,6 +550,7 @@ function checkVolumeSurge(candles, lookback = 10, threshold = 1.5) {
   return current.volume > avg * threshold;
 }
 
+// Topping tail on most recent 1m bar
 function checkToppingTail(candles) {
   const c     = candles[candles.length - 1];
   const range = c.high - c.low;
@@ -603,16 +558,15 @@ function checkToppingTail(candles) {
   return (c.high - c.close) / range > 0.6;
 }
 
-// Last completed 5m close vs low of the 5m bar before it (skip forming bar at end)
+// Last completed 1m close vs low of the bar before it
 function getCandleUnderSnapshot(candles) {
   if (candles.length < 3) return null;
   const closed = candles[candles.length - 2];
-  const prior = candles[candles.length - 3];
-  const met = closed.close < prior.low;
-  const c = closed.close.toFixed(2);
-  const l = prior.low.toFixed(2);
-  const detail = met ? `C $${c} < $${l} L` : `C $${c} ≥ $${l} L`;
-  return { met, detail, closed, prior };
+  const prior  = candles[candles.length - 3];
+  const met    = closed.close < prior.low;
+  const c      = closed.close.toFixed(2);
+  const l      = prior.low.toFixed(2);
+  return { met, detail: met ? `C $${c} < $${l} L` : `C $${c} ≥ $${l} L` };
 }
 
 function checkCandleUnderCandle(candles) {
@@ -620,25 +574,36 @@ function checkCandleUnderCandle(candles) {
   return snap ? snap.met : false;
 }
 
+// Pullback ≤ 50% of prior move on 1-min — 30-candle lookback (30 minutes of history)
 function checkPullback(candles) {
   if (candles.length < 5) return { valid: false, pct: null };
-  const recent = candles.slice(-10);
+  const recent = candles.slice(-30);  // 30 min of 1-min bars
+
+  // Find highest high in the window (pole top)
   let poleHighIdx = 0;
   for (let i = 1; i < recent.length; i++) {
     if (recent[i].high > recent[poleHighIdx].high) poleHighIdx = i;
   }
-  if (poleHighIdx === 0 || poleHighIdx === recent.length - 1) return { valid: false, pct: null };
+
+  // Need candles before AND after the high to measure pole + pullback
+  if (poleHighIdx === 0 || poleHighIdx === recent.length - 1) {
+    return { valid: false, pct: null, atPeak: poleHighIdx === recent.length - 1 };
+  }
+
   const beforePole = recent.slice(0, poleHighIdx);
   const poleBottom = Math.min(...beforePole.map(c => c.low));
   const poleTop    = recent[poleHighIdx].high;
   const poleSize   = poleTop - poleBottom;
   if (poleSize <= 0) return { valid: false, pct: null };
+
   const afterPole   = recent.slice(poleHighIdx + 1);
   const pullbackLow = Math.min(...afterPole.map(c => c.low));
   const pullbackPct = ((poleTop - pullbackLow) / poleSize) * 100;
-  return { valid: pullbackPct <= 50, pct: pullbackPct };
+
+  return { valid: pullbackPct <= 50, pct: pullbackPct, atPeak: false };
 }
 
+// VWAP break during consolidation — checked on 1-min bars
 function checkVWAPBreakDuringConsolidation(candles, vwap) {
   if (candles.length < 6) return false;
   const window   = candles.slice(-6, -1);
@@ -654,21 +619,24 @@ async function buildSignals(symbol) {
   const [quote, pack5m, candles1mRaw, vwapPack] = await Promise.all([
     getQuote(symbol),
     getSignal5mCandles(symbol, sessionCfg),
-    getMacdMinuteCandles(symbol),
+    getSignal1mCandles(symbol),          // single fetch for both MACD and entry checks
     getVwapCandles(symbol)
   ]);
-  const candles5m = pack5m.candles;
-  let candlesVwap = vwapPack.candles;
-  const vwapTag = vwapPack.tag;
+
+  const candles5m   = pack5m.candles;
+  let   candlesVwap = vwapPack.candles;
+  const vwapTag     = vwapPack.tag;
   const marketSession = vwapPack.session;
 
   const min5mBars = marketSession === 'PRE' ? 9 : 24;
   if (!quote || candles5m.length < min5mBars) return null;
 
+  // Patch live quote into 1-min feed (current forming bar)
   const candles1m = shouldPatchQuote(candles1mRaw, quote)
-    ? applyLiveQuoteToCandles(candles1mRaw, quote)
+    ? applyLiveQuoteToCandles(candles1mRaw, quote, 60 * 1000)
     : candles1mRaw;
 
+  // Patch live quote into VWAP feed
   const vwapBucketMs = vwapPack.bucketMs;
   if (shouldPatchQuote(candlesVwap, quote, vwapBucketMs)) {
     candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapBucketMs);
@@ -677,10 +645,15 @@ async function buildSignals(symbol) {
   const price      = quote.lastPrice;
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
-  const vwap = calcVWAP(candlesVwap);
+
+  // ── 5-MIN: trend indicators ──────────────────────────────────
+  const vwap        = calcVWAP(candlesVwap);
+  const ema9        = calcEMA(candles5m, 9);
+  const ema9Sloping = calcEMASlope(candles5m, 9);
+
   if (vwap !== null && candlesVwap.length) {
     const vFirst = candlesVwap[0];
-    const vLast = candlesVwap[candlesVwap.length - 1];
+    const vLast  = candlesVwap[candlesVwap.length - 1];
     console.log(
       `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} ${vwapPack.barSize}, ` +
       `${formatEtHm(vFirst.datetime)}–${formatEtHm(vLast.datetime)} ET)`
@@ -688,55 +661,58 @@ async function buildSignals(symbol) {
     if (vwapPack.partialEth) {
       console.warn(
         `${symbol} VWAP: anchored 4:00 AM ET but Schwab feed starts ${formatEtHm(vFirst.datetime)} — ` +
-        `4:00–7:00 AM usually missing until later; TOS will differ`
+        `early ETH missing; TOS will differ`
       );
     }
   }
-  const ema9        = calcEMA(candles5m, 9);
-  const ema9Sloping = calcEMASlope(candles5m, 9);
+
+  // ── 1-MIN: entry timing indicators ───────────────────────────
   const macd        = calcMACD(candles1m, symbol);
-  const volDry      = checkVolumeDry(candles5m);
-  const volSurge    = checkVolumeSurge(candles5m);
-  const toppingTail = checkToppingTail(candles5m);
-  const candleUnder = checkCandleUnderCandle(candles5m);
-  const pullback    = checkPullback(candles5m);
-  const vwapBreak   = checkVWAPBreakDuringConsolidation(candles5m, vwap);
+  const volDry      = checkVolumeDry(candles1m);
+  const volSurge    = checkVolumeSurge(candles1m);
+  const toppingTail = checkToppingTail(candles1m);
+  const candleUnder = checkCandleUnderCandle(candles1m);
+  const pullback    = checkPullback(candles1m);
+  const vwapBreak   = checkVWAPBreakDuringConsolidation(candles1m, vwap);
 
-  // Histogram: negative = bearish momentum, positive = bullish
-  const histValue     = macd?.histogram ?? null;
-  const histPct       = histValue !== null ? macdHistogramPct(histValue, price) : null;
-  const histStrength  = macd?.strength ?? null;
+  // Pullback detail — distinguish "at peak" from "no structure found"
+  const pullbackDetail = pullback.pct !== null
+    ? `${pullback.pct.toFixed(0)}% retraced`
+    : pullback.atPeak
+      ? 'at peak — no pullback yet'
+      : 'no structure found';
+
+  // MACD histogram
+  const histValue        = macd?.histogram ?? null;
+  const histStrength     = macd?.strength ?? null;
   const histStrengthTier = macd?.strengthTier ?? null;
-  const histNeg       = histValue !== null ? histValue < 0 : false;
-  const histDetail = formatMacdHistDetail(histValue, histStrength, histStrengthTier);
+  const histNeg          = histValue !== null ? histValue < 0 : false;
+  const histDetail       = formatMacdHistDetail(histValue, histStrength, histStrengthTier);
 
-  const candleUnderSnap = getCandleUnderSnapshot(candles5m);
-  const candleUnderDetail = candleUnderSnap?.detail ?? 'need 3+ 5m bars';
+  // Candle under candle detail
+  const candleUnderSnap   = getCandleUnderSnapshot(candles1m);
+  const candleUnderDetail = candleUnderSnap?.detail ?? 'need 3+ 1m bars';
 
   return {
     symbol,
     price,
     marketSession,
     vwapPartialEth: vwapPack.partialEth,
-    macdHistogram: histValue,
-    macdHistogramPct: histPct,
-    macdHistogramStrength: histStrength,
-    macdHistogramStrengthTier: histStrengthTier,
     buy: {
-      up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP?',          value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
-      ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,      detail: `EMA ${formatUsd(ema9)}` },
-      volDry:    { label: 'Volume dried up?',           value: volDry,           detail: 'prev < 50% avg' },
-      volSurge:  { label: 'Volume surge on candle?',    value: volSurge,         detail: 'cur > 150% avg' },
-      pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,   detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
+      up10pct:   { label: 'Stock up 10%+ on day?',       value: dayGainPct >= 10,             detail: `${dayGainPct.toFixed(1)}%` },
+      aboveVWAP: { label: 'Price above VWAP?',            value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
+      ema9Up:    { label: '9 EMA sloping up (5-min)?',   value: ema9Sloping,                  detail: `EMA ${formatUsd(ema9)}` },
+      volDry:    { label: 'Volume dried up? (1-min)',     value: volDry,                       detail: 'prev < 50% avg' },
+      volSurge:  { label: 'Volume surge on candle? (1-min)', value: volSurge,                 detail: 'cur > 150% avg' },
+      pullback:  { label: 'Pullback ≤ 50% of move? (1-min)', value: pullback.valid,           detail: pullbackDetail },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',             value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
-      belowEMA9:  { label: 'Price below 9 EMA?',            value: ema9 != null && price < ema9, detail: `EMA ${formatUsd(ema9)}` },
-      macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
-      candleUnder:{ label: 'Close below prior low?',         value: candleUnder,   detail: candleUnderDetail },
-      toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,   detail: 'wick > 60% range' },
-      vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,     detail: 'cross below VWAP' },
+      belowVWAP:  { label: 'Price below VWAP?',              value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
+      belowEMA9:  { label: 'Price below 9 EMA?',             value: ema9 != null && price < ema9, detail: `EMA ${formatUsd(ema9)}` },
+      macdNeg:    { label: 'MACD histogram negative?',        value: histNeg,                      detail: histDetail },
+      candleUnder:{ label: 'Close below prior low? (1-min)',  value: candleUnder,                  detail: candleUnderDetail },
+      toppingTail:{ label: 'Topping tail detected? (1-min)',  value: toppingTail,                  detail: 'wick > 60% range' },
+      vwapBreak:  { label: 'VWAP break in consolidation?',    value: vwapBreak,                    detail: 'cross below VWAP' },
     }
   };
 }
@@ -760,9 +736,9 @@ app.get('/api/signals/:symbol', async (req, res) => {
 app.get('/api/status', (req, res) => {
   res.json({
     authenticated: !!accessToken,
-    session: getMarketSession(),
-    open: isGatekeeperOpen(),
-    hoursEt: '4:00 AM – 8:00 PM'
+    session:  getMarketSession(),
+    open:     isGatekeeperOpen(),
+    hoursEt:  '4:00 AM – 8:00 PM'
   });
 });
 
