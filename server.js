@@ -100,9 +100,20 @@ async function getQuote(symbol) {
 async function getPriceHistory(symbol, periodType, period, frequencyType, frequency, opts = {}) {
   await ensureToken();
   const { needExtendedHoursData = false, startDate, endDate } = opts;
-  const params = { symbol, periodType, period, frequencyType, frequency, needExtendedHoursData };
-  if (startDate != null) params.startDate = startDate;
-  if (endDate != null) params.endDate = endDate;
+  
+  const params = { symbol, frequencyType, frequency, needExtendedHoursData };
+  
+  // Only include periodType/period when NOT using startDate/endDate
+  // Schwab ignores date range when period params are present
+  if (startDate != null) {
+    params.startDate = startDate;
+    if (endDate != null) params.endDate = endDate;
+  } else {
+    params.periodType = periodType;
+    params.period = period;
+    if (endDate != null) params.endDate = endDate;
+  }
+
   const res = await axios.get(`${MARKET_DATA_URL}/pricehistory`, {
     headers: { 'Authorization': `Bearer ${accessToken}` },
     params
