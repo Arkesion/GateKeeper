@@ -250,6 +250,21 @@ function formatUsd(value) {
   return Number.isFinite(value) ? `$${value.toFixed(2)}` : 'n/a';
 }
 
+function formatEtHm(ms) {
+  const { h, m } = getEtHourMinute(ms);
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+// When Schwab's first bar is after 4:00 AM, VWAP won't match TOS (full ETH tape)
+function getVwapDataNote(candles, anchorMs) {
+  if (!candles.length) return null;
+  const gapMs = 30 * 60 * 1000;
+  if (candles[0].datetime > anchorMs + gapMs) {
+    return `from ${formatEtHm(candles[0].datetime)} ET`;
+  }
+  return null;
+}
+
 function sortCandles(candles) {
   return candles.length > 1 && candles[0].datetime
     ? [...candles].sort((a, b) => a.datetime - b.datetime)
@@ -287,33 +302,52 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
   return candles;
 }
 
-// 5-min bars from 4:00 AM ETH → now (matches TOS 5-min chart VWAP; 1-min is too sparse pre-open)
+// Day VWAP from 4:00 AM ETH; uses finest bars Schwab returns (often 1m > 5m count)
 async function getVwapCandles(symbol, cfg = getVwapConfig()) {
   const endDate = Date.now();
-  const fetch5m = (startMs) =>
-    getPriceHistory(symbol, 'day', 2, 'minute', 5, {
+  const fetchBars = (freq, startMs) =>
+    getPriceHistory(symbol, 'day', 2, 'minute', freq, {
       startDate: startMs,
       endDate,
       needExtendedHoursData: true
     });
+  const filter = raw => sortCandles(raw).filter(cfg.filterCandle);
 
-  let raw = await fetch5m(cfg.vwapStartMs);
-  let candles = sortCandles(raw).filter(cfg.filterCandle);
+  let c5 = filter(await fetchBars(5, cfg.vwapStartMs));
+  let c1 = filter(await fetchBars(1, cfg.vwapStartMs));
 
-  // If Schwab omits early pre-market on a narrow window, widen then keep today from 4 AM
   const maxGapMs = 30 * 60 * 1000;
-  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + maxGapMs) {
-    const wide = await fetch5m(endDate - 5 * 24 * 60 * 60 * 1000);
-    const fallback = filterToMostRecentTradingDay(sortCandles(wide), cfg.filterCandle);
-    if (
-      fallback.length > candles.length &&
-      (!fallback.length || fallback[0].datetime <= cfg.vwapStartMs + maxGapMs)
-    ) {
-      candles = fallback;
-    }
+  const needsWide = set => !set.length || set[0].datetime > cfg.vwapStartMs + maxGapMs;
+  if (needsWide(c5) || needsWide(c1)) {
+    const wideStart = endDate - 5 * 24 * 60 * 60 * 1000;
+    const w5 = filter(await fetchBars(5, wideStart));
+    const w1 = filter(await fetchBars(1, wideStart));
+    if (w5.length > c5.length) c5 = w5;
+    if (w1.length > c1.length) c1 = w1;
   }
 
-  return { candles, tag: cfg.tag, session: cfg.session };
+  let candles = c5;
+  let barSize = '5m';
+  let bucketMs = 5 * 60 * 1000;
+  if (
+    c1.length > 0 &&
+    (c5.length === 0 ||
+      c1[0].datetime < c5[0].datetime ||
+      (c1[0].datetime === c5[0].datetime && c1.length > c5.length))
+  ) {
+    candles = c1;
+    barSize = '1m';
+    bucketMs = 60 * 1000;
+  }
+
+  return {
+    candles,
+    tag: cfg.tag,
+    session: cfg.session,
+    barSize,
+    bucketMs,
+    dataNote: getVwapDataNote(candles, cfg.vwapStartMs)
+  };
 }
 
 // 5-min bars for EMA / volume / candle rules (same session window as price action)
@@ -629,7 +663,7 @@ async function buildSignals(symbol) {
     ? applyLiveQuoteToCandles(candles1mRaw, quote)
     : candles1mRaw;
 
-  const vwapBucketMs = 5 * 60 * 1000;
+  const vwapBucketMs = vwapPack.bucketMs;
   if (shouldPatchQuote(candlesVwap, quote, vwapBucketMs)) {
     candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapBucketMs);
   }
@@ -637,17 +671,22 @@ async function buildSignals(symbol) {
   const price      = quote.lastPrice;
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
+  const vwapDetailSuffix = vwapPack.dataNote ? `, ${vwapPack.dataNote}` : '';
 
   const vwap = calcVWAP(candlesVwap);
   if (vwap !== null && candlesVwap.length) {
     const vFirst = candlesVwap[0];
     const vLast = candlesVwap[candlesVwap.length - 1];
-    const fmtHm = ms =>
-      `${getEtHourMinute(ms).h}:${String(getEtHourMinute(ms).m).padStart(2, '0')}`;
     console.log(
-      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} 5m, ` +
-      `${fmtHm(vFirst.datetime)}–${fmtHm(vLast.datetime)} ET)`
+      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} ${vwapPack.barSize}, ` +
+      `${formatEtHm(vFirst.datetime)}–${formatEtHm(vLast.datetime)} ET${vwapDetailSuffix})`
     );
+    if (vwapPack.dataNote) {
+      console.warn(
+        `${symbol} VWAP: Schwab pricehistory has no bars before ${vwapPack.dataNote} — ` +
+        `TOS/eth tape from 4:00 AM will differ`
+      );
+    }
   }
   const ema9        = calcEMA(candles5m, 9);
   const ema9Sloping = calcEMASlope(candles5m, 9);
@@ -674,20 +713,21 @@ async function buildSignals(symbol) {
     symbol,
     price,
     marketSession,
+    vwapDataNote: vwapPack.dataNote,
     macdHistogram: histValue,
     macdHistogramPct: histPct,
     macdHistogramStrength: histStrength,
     macdHistogramStrengthTier: histStrengthTier,
     buy: {
       up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP?',          value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
+      aboveVWAP: { label: 'Price above VWAP?',          value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag}${vwapDetailSuffix})` },
       ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,      detail: `EMA ${formatUsd(ema9)}` },
       volDry:    { label: 'Volume dried up?',           value: volDry,           detail: 'prev < 50% avg' },
       volSurge:  { label: 'Volume surge on candle?',    value: volSurge,         detail: 'cur > 150% avg' },
       pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,   detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',             value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
+      belowVWAP:  { label: 'Price below VWAP?',             value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag}${vwapDetailSuffix})` },
       belowEMA9:  { label: 'Price below 9 EMA?',            value: ema9 != null && price < ema9, detail: `EMA ${formatUsd(ema9)}` },
       macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
       candleUnder:{ label: 'Close below prior low?',         value: candleUnder,   detail: candleUnderDetail },
