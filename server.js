@@ -150,10 +150,13 @@ function calcEMASlope(candles, period) {
 
 // Full MACD: line, signal line, histogram (TOS 12/26/9 exponential)
 // histogram > 0 = MACD line above signal = bullish momentum
-function calcMACD(candles) {
+function calcMACD(candles, symbol) {
   if (candles.length < 9) return null;
 
-  const closes = candles.map(c => c.close);
+  const sorted = candles.length > 1 && candles[0].datetime
+    ? [...candles].sort((a, b) => a.datetime - b.datetime)
+    : candles;
+  const closes = sorted.map(c => c.close);
   if (closes.some(v => !Number.isFinite(v))) return null;
 
   const k12 = 2 / 13;
@@ -175,8 +178,9 @@ function calcMACD(candles) {
   if (signal === null) return null;
 
   const histogram = macdLine - signal;
+  const tag = symbol ? `${symbol} ` : '';
   console.log(
-    `MACD line=${macdLine.toFixed(4)} signal=${signal.toFixed(4)} histogram=${histogram.toFixed(4)}`
+    `${tag}MACD (${sorted.length} bars) line=${macdLine.toFixed(4)} signal=${signal.toFixed(4)} histogram=${histogram.toFixed(4)}`
   );
 
   return { line: macdLine, signal, histogram };
@@ -243,7 +247,7 @@ async function buildSignals(symbol) {
   const [quote, candles5m, candles1m] = await Promise.all([
     getQuote(symbol),
     getPriceHistory(symbol, 'day', 1, 'minute', 5),
-    getPriceHistory(symbol, 'day', 1, 'minute', 1)
+    getPriceHistory(symbol, 'day', 10, 'minute', 1)
   ]);
 
   if (!quote || candles5m.length < 30) return null;
@@ -255,7 +259,7 @@ async function buildSignals(symbol) {
   const vwap        = calcVWAP(candles5m);
   const ema9        = calcEMA(candles5m, 9);
   const ema9Sloping = calcEMASlope(candles5m, 9);
-  const macd        = calcMACD(candles1m);
+  const macd        = calcMACD(candles1m, symbol);
   const volDry      = checkVolumeDry(candles5m);
   const volSurge    = checkVolumeSurge(candles5m);
   const toppingTail = checkToppingTail(candles5m);
@@ -267,7 +271,7 @@ async function buildSignals(symbol) {
   const histValue  = macd?.histogram ?? null;
   const histNeg    = histValue !== null ? histValue < 0 : false;
   const histDetail = histValue !== null
-    ? `HIST ${histValue >= 0 ? '+' : ''}${(histValue / price * 10000).toFixed(2)}%`
+    ? `HIST ${histValue >= 0 ? '+' : ''}${histValue.toFixed(7)}`
     : 'insufficient data';
 
   const currClose = candles5m[candles5m.length - 1].close;
