@@ -110,6 +110,97 @@ async function getPriceHistory(symbol, periodType, period, frequencyType, freque
   return res.data.candles || [];
 }
 
+const NY_TZ = 'America/New_York';
+
+function getEtDateString(ms) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: NY_TZ }).format(new Date(ms));
+}
+
+function getEtHourMinute(ms) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: NY_TZ,
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false
+  }).formatToParts(new Date(ms));
+  return {
+    h: parseInt(parts.find(p => p.type === 'hour').value, 10),
+    m: parseInt(parts.find(p => p.type === 'minute').value, 10)
+  };
+}
+
+// UTC ms for a given calendar day + clock time in New York (handles DST)
+function utcFromEtDateTime(dateStr, hour, minute) {
+  let lo = Date.parse(`${dateStr}T17:00:00.000Z`) - 36 * 60 * 60 * 1000;
+  let hi = Date.parse(`${dateStr}T17:00:00.000Z`) + 36 * 60 * 60 * 1000;
+  const target = hour * 60 + minute;
+  for (let i = 0; i < 40; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const { h, m } = getEtHourMinute(mid);
+    const mins = h * 60 + m;
+    const day = getEtDateString(mid);
+    if (day < dateStr || (day === dateStr && mins < target)) lo = mid + 1;
+    else hi = mid;
+  }
+  return hi;
+}
+
+// TOS "VWAP DAY" anchor: 9:30 AM ET, current session (or prior day before open)
+function getNyRegularSessionStartMs(now = Date.now()) {
+  const { h, m } = getEtHourMinute(now);
+  const mins = h * 60 + m;
+  const openMins = 9 * 60 + 30;
+  let sessionDate = getEtDateString(now);
+  if (mins < openMins) {
+    sessionDate = getEtDateString(now - 24 * 60 * 60 * 1000);
+  }
+  return utcFromEtDateTime(sessionDate, 9, 30);
+}
+
+function filterRthCandles(candles) {
+  return candles.filter(c => {
+    const { h, m } = getEtHourMinute(c.datetime);
+    const mins = h * 60 + m;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  });
+}
+
+function filterRthFromMostRecentSession(candles) {
+  if (!candles.length) return [];
+  const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
+  const byDay = new Map();
+  for (const c of sorted) {
+    const d = getEtDateString(c.datetime);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(c);
+  }
+  const lastDay = [...byDay.keys()].sort().pop();
+  return filterRthCandles(byDay.get(lastDay) || []);
+}
+
+// 1-min RTH from today's 9:30 ET — matches TOS VWAP (DAY)
+async function getVwapCandles(symbol) {
+  const endDate = Date.now();
+  const startDate = getNyRegularSessionStartMs(endDate);
+  let raw = await getPriceHistory(symbol, 'day', 1, 'minute', 1, {
+    startDate,
+    endDate,
+    needExtendedHoursData: false
+  });
+  let candles = filterRthCandles(
+    raw.length > 1 && raw[0].datetime ? [...raw].sort((a, b) => a.datetime - b.datetime) : raw
+  );
+  if (candles.length < 10) {
+    raw = await getPriceHistory(symbol, 'day', 5, 'minute', 1, {
+      startDate: endDate - 5 * 24 * 60 * 60 * 1000,
+      endDate,
+      needExtendedHoursData: false
+    });
+    candles = filterRthFromMostRecentSession(raw);
+  }
+  return candles;
+}
+
 // 1-min for MACD: last ~2 sessions, extended hours (matches TOS 1-min + ETH)
 async function getMacdMinuteCandles(symbol) {
   const endDate = Date.now();
@@ -351,9 +442,21 @@ function checkToppingTail(candles) {
   return (c.high - c.close) / range > 0.6;
 }
 
+// Last completed 5m close vs low of the 5m bar before it (skip forming bar at end)
+function getCandleUnderSnapshot(candles) {
+  if (candles.length < 3) return null;
+  const closed = candles[candles.length - 2];
+  const prior = candles[candles.length - 3];
+  const met = closed.close < prior.low;
+  const detail = met
+    ? `5m C $${closed.close.toFixed(2)} < prior L $${prior.low.toFixed(2)}`
+    : `5m C $${closed.close.toFixed(2)} ≥ prior L $${prior.low.toFixed(2)}`;
+  return { met, detail, closed, prior };
+}
+
 function checkCandleUnderCandle(candles) {
-  if (candles.length < 2) return false;
-  return candles[candles.length - 1].close < candles[candles.length - 2].low;
+  const snap = getCandleUnderSnapshot(candles);
+  return snap ? snap.met : false;
 }
 
 function checkPullback(candles) {
@@ -386,10 +489,11 @@ function checkVWAPBreakDuringConsolidation(candles, vwap) {
 }
 
 async function buildSignals(symbol) {
-  const [quote, candles5m, candles1mRaw] = await Promise.all([
+  const [quote, candles5m, candles1mRaw, candlesVwap] = await Promise.all([
     getQuote(symbol),
     getPriceHistory(symbol, 'day', 1, 'minute', 5),
-    getMacdMinuteCandles(symbol)
+    getMacdMinuteCandles(symbol),
+    getVwapCandles(symbol)
   ]);
 
   if (!quote || candles5m.length < 30) return null;
@@ -402,7 +506,16 @@ async function buildSignals(symbol) {
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
 
-  const vwap        = calcVWAP(candles5m);
+  const vwap        = calcVWAP(candlesVwap);
+  if (vwap !== null && candlesVwap.length) {
+    const vFirst = candlesVwap[0];
+    const vLast = candlesVwap[candlesVwap.length - 1];
+    console.log(
+      `${symbol} VWAP $${vwap.toFixed(2)} (${candlesVwap.length} RTH 1m bars, ` +
+      `${getEtDateString(vFirst.datetime)} ${getEtHourMinute(vFirst.datetime).h}:${String(getEtHourMinute(vFirst.datetime).m).padStart(2, '0')}–` +
+      `${getEtHourMinute(vLast.datetime).h}:${String(getEtHourMinute(vLast.datetime).m).padStart(2, '0')} ET)`
+    );
+  }
   const ema9        = calcEMA(candles5m, 9);
   const ema9Sloping = calcEMASlope(candles5m, 9);
   const macd        = calcMACD(candles1m, symbol);
@@ -421,8 +534,8 @@ async function buildSignals(symbol) {
   const histNeg       = histValue !== null ? histValue < 0 : false;
   const histDetail = formatMacdHistDetail(histValue, histStrength, histStrengthTier);
 
-  const currClose = candles5m[candles5m.length - 1].close;
-  const prevLow   = candles5m[candles5m.length - 2].low;
+  const candleUnderSnap = getCandleUnderSnapshot(candles5m);
+  const candleUnderDetail = candleUnderSnap?.detail ?? 'need 3+ 5m bars';
 
   return {
     symbol,
@@ -443,7 +556,7 @@ async function buildSignals(symbol) {
       belowVWAP:  { label: 'Price below VWAP?',             value: price < vwap,  detail: `VWAP $${vwap?.toFixed(2)}` },
       belowEMA9:  { label: 'Price below 9 EMA?',            value: price < ema9,  detail: `EMA $${ema9?.toFixed(2)}` },
       macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
-      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,   detail: `C $${currClose.toFixed(2)} < L $${prevLow.toFixed(2)}` },
+      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,   detail: candleUnderDetail },
       toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,   detail: 'wick > 60% range' },
       vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,     detail: 'cross below VWAP' },
     }
