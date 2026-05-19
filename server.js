@@ -97,13 +97,72 @@ async function getQuote(symbol) {
   return res.data[symbol]?.quote || null;
 }
 
-async function getPriceHistory(symbol, periodType, period, frequencyType, frequency) {
+async function getPriceHistory(symbol, periodType, period, frequencyType, frequency, opts = {}) {
   await ensureToken();
+  const { needExtendedHoursData = false, startDate, endDate } = opts;
+  const params = { symbol, periodType, period, frequencyType, frequency, needExtendedHoursData };
+  if (startDate != null) params.startDate = startDate;
+  if (endDate != null) params.endDate = endDate;
   const res = await axios.get(`${MARKET_DATA_URL}/pricehistory`, {
     headers: { 'Authorization': `Bearer ${accessToken}` },
-    params:  { symbol, periodType, period, frequencyType, frequency, needExtendedHoursData: false }
+    params
   });
   return res.data.candles || [];
+}
+
+// 1-min for MACD: last ~2 sessions, extended hours (matches TOS 1-min + ETH)
+async function getMacdMinuteCandles(symbol) {
+  const endDate = Date.now();
+  const startDate = endDate - 2 * 24 * 60 * 60 * 1000;
+  return getPriceHistory(symbol, 'day', 10, 'minute', 1, {
+    startDate,
+    endDate,
+    needExtendedHoursData: true
+  });
+}
+
+// Update the current minute bar from the live quote (no duplicate bars)
+function applyLiveQuoteToCandles(candles, quote) {
+  if (!candles?.length || !quote?.lastPrice || !Number.isFinite(quote.lastPrice)) {
+    return candles;
+  }
+  const sorted = candles.length > 1 && candles[0].datetime
+    ? [...candles].sort((a, b) => a.datetime - b.datetime)
+    : [...candles];
+  const last = sorted[sorted.length - 1];
+  const qTime = quote.quoteTime || quote.tradeTime;
+  const price = quote.lastPrice;
+  const minuteMs = 60 * 1000;
+
+  if (!qTime) {
+    last.close = price;
+    return sorted;
+  }
+
+  const qMinute = Math.floor(qTime / minuteMs) * minuteMs;
+  const lastMinute = Math.floor(last.datetime / minuteMs) * minuteMs;
+
+  if (qMinute === lastMinute) {
+    last.close = price;
+    if (last.high != null) last.high = Math.max(last.high, price);
+    if (last.low != null) last.low = Math.min(last.low, price);
+  } else if (qMinute > lastMinute) {
+    sorted.push({
+      datetime: qMinute,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      volume: 0
+    });
+  }
+  return sorted;
+}
+
+function shouldPatchQuote(candles, quote) {
+  if (!candles?.length || !quote?.quoteTime) return false;
+  const last = candles[candles.length - 1];
+  return quote.quoteTime > last.datetime + 60 * 1000;
 }
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
@@ -179,8 +238,11 @@ function calcMACD(candles, symbol) {
 
   const histogram = macdLine - signal;
   const tag = symbol ? `${symbol} ` : '';
+  const lastBar = sorted[sorted.length - 1];
+  const lastTs = lastBar?.datetime ? new Date(lastBar.datetime).toISOString() : 'n/a';
   console.log(
-    `${tag}MACD (${sorted.length} bars) line=${macdLine.toFixed(4)} signal=${signal.toFixed(4)} histogram=${histogram.toFixed(4)}`
+    `${tag}MACD (${sorted.length} bars, last ${lastTs} close=${lastBar?.close}) ` +
+    `line=${macdLine.toFixed(7)} signal=${signal.toFixed(7)} histogram=${histogram.toFixed(7)}`
   );
 
   return { line: macdLine, signal, histogram };
@@ -244,13 +306,17 @@ function checkVWAPBreakDuringConsolidation(candles, vwap) {
 }
 
 async function buildSignals(symbol) {
-  const [quote, candles5m, candles1m] = await Promise.all([
+  const [quote, candles5m, candles1mRaw] = await Promise.all([
     getQuote(symbol),
     getPriceHistory(symbol, 'day', 1, 'minute', 5),
-    getPriceHistory(symbol, 'day', 10, 'minute', 1)
+    getMacdMinuteCandles(symbol)
   ]);
 
   if (!quote || candles5m.length < 30) return null;
+
+  const candles1m = shouldPatchQuote(candles1mRaw, quote)
+    ? applyLiveQuoteToCandles(candles1mRaw, quote)
+    : candles1mRaw;
 
   const price      = quote.lastPrice;
   const prevClose  = quote.closePrice;
