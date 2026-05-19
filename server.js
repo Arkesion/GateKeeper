@@ -233,6 +233,16 @@ function formatMacdStrength(strength) {
   return sign + Math.round(strength) + '%';
 }
 
+// Compact panel label: direction + strength vs recent peak (no raw $ histogram)
+function formatMacdHistDetail(histogram, strength, tier) {
+  if (!Number.isFinite(histogram)) return 'insufficient data';
+  if (!Number.isFinite(strength) || !tier) {
+    return histogram < 0 ? 'HIST ↓ weak' : 'HIST ↑ weak';
+  }
+  const arrow = histogram < 0 ? '↓' : '↑';
+  return `HIST ${arrow}${Math.round(Math.abs(strength))}% ${tier}`;
+}
+
 // EMA on candle array (uses .close)
 function calcEMA(candles, period) {
   if (candles.length < period) return null;
@@ -409,9 +419,7 @@ async function buildSignals(symbol) {
   const histStrength  = macd?.strength ?? null;
   const histStrengthTier = macd?.strengthTier ?? null;
   const histNeg       = histValue !== null ? histValue < 0 : false;
-  const histDetail = histValue !== null
-    ? `HIST ${histStrengthTier} ${formatMacdStrength(histStrength)} · ${formatMacdPercent(histValue, price)} px`
-    : 'insufficient data';
+  const histDetail = formatMacdHistDetail(histValue, histStrength, histStrengthTier);
 
   const currClose = candles5m[candles5m.length - 1].close;
   const prevLow   = candles5m[candles5m.length - 2].low;
