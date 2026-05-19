@@ -313,7 +313,7 @@
       dot.textContent = '● POLLING';
       dot.className   = '';
       fetchSignals();
-      pollInterval = setInterval(fetchSignals, 500);
+      pollInterval = setInterval(fetchSignals, 2000);
     }
   }
 
@@ -364,12 +364,22 @@
 
   // ── SIGNALS ────────────────────────────────────────────────
   async function fetchSignals() {
-    if (!currentSymbol) return;
-    try {
-      const res = await fetch(`/api/signals/${currentSymbol}`);
-      if (!res.ok) return;
-      renderSignals(await res.json());
-    } catch {
+  if (!currentSymbol) return;
+  try {
+    const res = await fetch(`/api/signals/${currentSymbol}`);
+    if (res.status === 429) {
+      const dot = document.getElementById('live-dot');
+      dot.textContent = '● RATE LIMITED — waiting 30s';
+      dot.className = '';
+      clearInterval(pollInterval);
+      setTimeout(() => {
+        pollInterval = setInterval(fetchSignals, 2000);
+      }, 30000);
+      return;
+    }
+    if (!res.ok) return;
+    renderSignals(await res.json());
+  } catch {
       const dot = document.getElementById('live-dot');
       dot.textContent = '● ERROR';
       dot.className   = '';

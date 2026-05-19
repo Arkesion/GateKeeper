@@ -635,6 +635,10 @@ app.get('/api/signals/:symbol', async (req, res) => {
     if (!signals) return res.status(503).json({ error: 'Insufficient data' });
     res.json(signals);
   } catch (err) {
+    if (err.response?.status === 429) {
+      console.error('⚠️ Rate limited by Schwab — backing off');
+      return res.status(429).json({ error: 'rate_limited' });
+    }
     console.error('Signal error:', err.message);
     res.status(500).json({ error: err.message });
   }
