@@ -287,9 +287,32 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
   return candles;
 }
 
-// 1-min bars for day VWAP (4:00 AM ETH → now), matches TOS extended-hours VWAP
+// 5-min bars from 4:00 AM ETH → now (matches TOS 5-min chart VWAP; 1-min is too sparse pre-open)
 async function getVwapCandles(symbol, cfg = getVwapConfig()) {
-  const candles = await fetchSessionCandles(symbol, 1, 'minute', cfg, 2);
+  const endDate = Date.now();
+  const fetch5m = (startMs) =>
+    getPriceHistory(symbol, 'day', 2, 'minute', 5, {
+      startDate: startMs,
+      endDate,
+      needExtendedHoursData: true
+    });
+
+  let raw = await fetch5m(cfg.vwapStartMs);
+  let candles = sortCandles(raw).filter(cfg.filterCandle);
+
+  // If Schwab omits early pre-market on a narrow window, widen then keep today from 4 AM
+  const maxGapMs = 30 * 60 * 1000;
+  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + maxGapMs) {
+    const wide = await fetch5m(endDate - 5 * 24 * 60 * 60 * 1000);
+    const fallback = filterToMostRecentTradingDay(sortCandles(wide), cfg.filterCandle);
+    if (
+      fallback.length > candles.length &&
+      (!fallback.length || fallback[0].datetime <= cfg.vwapStartMs + maxGapMs)
+    ) {
+      candles = fallback;
+    }
+  }
+
   return { candles, tag: cfg.tag, session: cfg.session };
 }
 
@@ -310,8 +333,8 @@ async function getMacdMinuteCandles(symbol) {
   });
 }
 
-// Update the current minute bar from the live quote (no duplicate bars)
-function applyLiveQuoteToCandles(candles, quote) {
+// Patch the active bar from the live quote (bucketMs = 60_000 for 1m, 300_000 for 5m)
+function applyLiveQuoteToCandles(candles, quote, bucketMs = 60 * 1000) {
   if (!candles?.length || !quote?.lastPrice || !Number.isFinite(quote.lastPrice)) {
     return candles;
   }
@@ -321,23 +344,22 @@ function applyLiveQuoteToCandles(candles, quote) {
   const last = sorted[sorted.length - 1];
   const qTime = quote.quoteTime || quote.tradeTime;
   const price = quote.lastPrice;
-  const minuteMs = 60 * 1000;
 
   if (!qTime) {
     last.close = price;
     return sorted;
   }
 
-  const qMinute = Math.floor(qTime / minuteMs) * minuteMs;
-  const lastMinute = Math.floor(last.datetime / minuteMs) * minuteMs;
+  const qBucket = Math.floor(qTime / bucketMs) * bucketMs;
+  const lastBucket = Math.floor(last.datetime / bucketMs) * bucketMs;
 
-  if (qMinute === lastMinute) {
+  if (qBucket === lastBucket) {
     last.close = price;
     if (last.high != null) last.high = Math.max(last.high, price);
     if (last.low != null) last.low = Math.min(last.low, price);
-  } else if (qMinute > lastMinute) {
+  } else if (qBucket > lastBucket) {
     sorted.push({
-      datetime: qMinute,
+      datetime: qBucket,
       open: price,
       high: price,
       low: price,
@@ -348,10 +370,10 @@ function applyLiveQuoteToCandles(candles, quote) {
   return sorted;
 }
 
-function shouldPatchQuote(candles, quote) {
+function shouldPatchQuote(candles, quote, bucketMs = 60 * 1000) {
   if (!candles?.length || !quote?.quoteTime) return false;
   const last = candles[candles.length - 1];
-  return quote.quoteTime > last.datetime + 60 * 1000;
+  return quote.quoteTime > last.datetime + bucketMs;
 }
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
@@ -457,8 +479,8 @@ function calcVWAP(candles) {
   for (const c of candles) {
     const tp = (c.high + c.low + c.close) / 3;
     if (!Number.isFinite(tp)) continue;
-    // Schwab often reports volume 0 on 1m bars; weight=1 keeps price in VWAP (closer to TOS tape)
-    const vol = Number.isFinite(c.volume) && c.volume > 0 ? c.volume : 1;
+    const vol = Number.isFinite(c.volume) && c.volume > 0 ? c.volume : 0;
+    if (vol <= 0) continue;
     cumTPV += tp * vol;
     cumVol += vol;
   }
@@ -607,8 +629,9 @@ async function buildSignals(symbol) {
     ? applyLiveQuoteToCandles(candles1mRaw, quote)
     : candles1mRaw;
 
-  if (shouldPatchQuote(candlesVwap, quote)) {
-    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote);
+  const vwapBucketMs = 5 * 60 * 1000;
+  if (shouldPatchQuote(candlesVwap, quote, vwapBucketMs)) {
+    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapBucketMs);
   }
 
   const price      = quote.lastPrice;
@@ -619,10 +642,11 @@ async function buildSignals(symbol) {
   if (vwap !== null && candlesVwap.length) {
     const vFirst = candlesVwap[0];
     const vLast = candlesVwap[candlesVwap.length - 1];
+    const fmtHm = ms =>
+      `${getEtHourMinute(ms).h}:${String(getEtHourMinute(ms).m).padStart(2, '0')}`;
     console.log(
-      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} 1m, ` +
-      `${getEtHourMinute(vFirst.datetime).h}:${String(getEtHourMinute(vFirst.datetime).m).padStart(2, '0')}–` +
-      `${getEtHourMinute(vLast.datetime).h}:${String(getEtHourMinute(vLast.datetime).m).padStart(2, '0')} ET)`
+      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} 5m, ` +
+      `${fmtHm(vFirst.datetime)}–${fmtHm(vLast.datetime)} ET)`
     );
   }
   const ema9        = calcEMA(candles5m, 9);
