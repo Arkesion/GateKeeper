@@ -145,60 +145,118 @@ function utcFromEtDateTime(dateStr, hour, minute) {
   return hi;
 }
 
-// TOS "VWAP DAY" anchor: 9:30 AM ET, current session (or prior day before open)
-function getNyRegularSessionStartMs(now = Date.now()) {
-  const { h, m } = getEtHourMinute(now);
-  const mins = h * 60 + m;
-  const openMins = 9 * 60 + 30;
-  let sessionDate = getEtDateString(now);
-  if (mins < openMins) {
-    sessionDate = getEtDateString(now - 24 * 60 * 60 * 1000);
+const PRE_OPEN_ET  = 4 * 60;         // 4:00 AM — Schwab pre-market
+const RTH_OPEN_ET  = 9 * 60 + 30;    // 9:30 AM
+const RTH_CLOSE_ET = 16 * 60;        // 4:00 PM
+const POST_CLOSE_ET = 20 * 60;       // 8:00 PM — Schwab after-hours
+
+function getEtMinutes(ms) {
+  const { h, m } = getEtHourMinute(ms);
+  return h * 60 + m;
+}
+
+// PRE (4:00–9:30) | RTH (9:30–16:00) | POST (16:00–20:00) | CLOSED
+function getMarketSession(now = Date.now()) {
+  const mins = getEtMinutes(now);
+  if (mins >= RTH_OPEN_ET && mins < RTH_CLOSE_ET) return 'RTH';
+  if (mins >= PRE_OPEN_ET && mins < RTH_OPEN_ET) return 'PRE';
+  if (mins >= RTH_CLOSE_ET && mins < POST_CLOSE_ET) return 'POST';
+  return 'CLOSED';
+}
+
+function getSessionConfig(now = Date.now()) {
+  const session = getMarketSession(now);
+  const today = getEtDateString(now);
+
+  const onToday = c => getEtDateString(c.datetime) === today;
+  const inMins = (c, lo, hi) => {
+    const mins = getEtMinutes(c.datetime);
+    return mins >= lo && mins < hi;
+  };
+
+  switch (session) {
+    case 'PRE':
+      return {
+        session,
+        tag: 'PRE',
+        needExtendedHours: true,
+        vwapStartMs: utcFromEtDateTime(today, 4, 0),
+        filterCandle: c => onToday(c) && inMins(c, PRE_OPEN_ET, RTH_OPEN_ET)
+      };
+    case 'RTH':
+      return {
+        session,
+        tag: 'RTH',
+        needExtendedHours: false,
+        vwapStartMs: utcFromEtDateTime(today, 9, 30),
+        filterCandle: c => onToday(c) && inMins(c, RTH_OPEN_ET, RTH_CLOSE_ET)
+      };
+    case 'POST':
+      return {
+        session,
+        tag: 'RTH+POST',
+        needExtendedHours: true,
+        vwapStartMs: utcFromEtDateTime(today, 9, 30),
+        filterCandle: c => onToday(c) && inMins(c, RTH_OPEN_ET, POST_CLOSE_ET)
+      };
+    default:
+      return {
+        session: 'CLOSED',
+        tag: 'EOD',
+        needExtendedHours: true,
+        vwapStartMs: now - 3 * 24 * 60 * 60 * 1000,
+        filterCandle: c => inMins(c, RTH_OPEN_ET, POST_CLOSE_ET)
+      };
   }
-  return utcFromEtDateTime(sessionDate, 9, 30);
 }
 
-function filterRthCandles(candles) {
-  return candles.filter(c => {
-    const { h, m } = getEtHourMinute(c.datetime);
-    const mins = h * 60 + m;
-    return mins >= 9 * 60 + 30 && mins < 16 * 60;
-  });
+function sortCandles(candles) {
+  return candles.length > 1 && candles[0].datetime
+    ? [...candles].sort((a, b) => a.datetime - b.datetime)
+    : candles;
 }
 
-function filterRthFromMostRecentSession(candles) {
+function filterToMostRecentTradingDay(candles, filterCandle) {
   if (!candles.length) return [];
-  const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
-  const byDay = new Map();
-  for (const c of sorted) {
-    const d = getEtDateString(c.datetime);
-    if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d).push(c);
-  }
-  const lastDay = [...byDay.keys()].sort().pop();
-  return filterRthCandles(byDay.get(lastDay) || []);
+  const sorted = sortCandles(candles);
+  const lastDay = getEtDateString(sorted[sorted.length - 1].datetime);
+  return sorted.filter(c => getEtDateString(c.datetime) === lastDay && filterCandle(c));
 }
 
-// 1-min RTH from today's 9:30 ET — matches TOS VWAP (DAY)
-async function getVwapCandles(symbol) {
+async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookbackDays = 2) {
   const endDate = Date.now();
-  const startDate = getNyRegularSessionStartMs(endDate);
-  let raw = await getPriceHistory(symbol, 'day', 1, 'minute', 1, {
+  const startDate = Math.min(cfg.vwapStartMs, endDate - lookbackDays * 24 * 60 * 60 * 1000);
+  const raw = await getPriceHistory(symbol, 'day', Math.max(lookbackDays, 2), frequencyType, frequency, {
     startDate,
     endDate,
-    needExtendedHoursData: false
+    needExtendedHoursData: cfg.needExtendedHours
   });
-  let candles = filterRthCandles(
-    raw.length > 1 && raw[0].datetime ? [...raw].sort((a, b) => a.datetime - b.datetime) : raw
-  );
+  let candles = sortCandles(raw).filter(c => c.datetime >= cfg.vwapStartMs && cfg.filterCandle(c));
+  if (cfg.session === 'CLOSED' && candles.length) {
+    const lastDay = getEtDateString(candles[candles.length - 1].datetime);
+    candles = candles.filter(c => getEtDateString(c.datetime) === lastDay);
+  }
   if (candles.length < 10) {
-    raw = await getPriceHistory(symbol, 'day', 5, 'minute', 1, {
+    const wide = await getPriceHistory(symbol, 'day', 5, frequencyType, frequency, {
       startDate: endDate - 5 * 24 * 60 * 60 * 1000,
       endDate,
-      needExtendedHoursData: false
+      needExtendedHoursData: true
     });
-    candles = filterRthFromMostRecentSession(raw);
+    candles = filterToMostRecentTradingDay(sortCandles(wide), cfg.filterCandle);
   }
   return candles;
+}
+
+// 1-min bars for session-appropriate VWAP
+async function getVwapCandles(symbol, cfg = getSessionConfig()) {
+  const candles = await fetchSessionCandles(symbol, 1, 'minute', cfg, 2);
+  return { candles, tag: cfg.tag, session: cfg.session };
+}
+
+// 5-min bars for EMA / volume / candle rules (same session window as price action)
+async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
+  const candles = await fetchSessionCandles(symbol, 5, 'minute', cfg, 3);
+  return { candles, session: cfg.session };
 }
 
 // 1-min for MACD: last ~2 sessions, extended hours (matches TOS 1-min + ETH)
@@ -448,9 +506,9 @@ function getCandleUnderSnapshot(candles) {
   const closed = candles[candles.length - 2];
   const prior = candles[candles.length - 3];
   const met = closed.close < prior.low;
-  const detail = met
-    ? `5m C $${closed.close.toFixed(2)} < prior L $${prior.low.toFixed(2)}`
-    : `5m C $${closed.close.toFixed(2)} ≥ prior L $${prior.low.toFixed(2)}`;
+  const c = closed.close.toFixed(2);
+  const l = prior.low.toFixed(2);
+  const detail = met ? `${c} < ${l}` : `${c} ≥ ${l}`;
   return { met, detail, closed, prior };
 }
 
@@ -489,14 +547,20 @@ function checkVWAPBreakDuringConsolidation(candles, vwap) {
 }
 
 async function buildSignals(symbol) {
-  const [quote, candles5m, candles1mRaw, candlesVwap] = await Promise.all([
+  const sessionCfg = getSessionConfig();
+  const [quote, pack5m, candles1mRaw, vwapPack] = await Promise.all([
     getQuote(symbol),
-    getPriceHistory(symbol, 'day', 1, 'minute', 5),
+    getSignal5mCandles(symbol, sessionCfg),
     getMacdMinuteCandles(symbol),
-    getVwapCandles(symbol)
+    getVwapCandles(symbol, sessionCfg)
   ]);
+  const candles5m = pack5m.candles;
+  const candlesVwap = vwapPack.candles;
+  const vwapTag = vwapPack.tag;
+  const marketSession = vwapPack.session;
 
-  if (!quote || candles5m.length < 30) return null;
+  const min5mBars = marketSession === 'PRE' ? 6 : 24;
+  if (!quote || candles5m.length < min5mBars) return null;
 
   const candles1m = shouldPatchQuote(candles1mRaw, quote)
     ? applyLiveQuoteToCandles(candles1mRaw, quote)
@@ -506,13 +570,13 @@ async function buildSignals(symbol) {
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
 
-  const vwap        = calcVWAP(candlesVwap);
+  const vwap = calcVWAP(candlesVwap);
   if (vwap !== null && candlesVwap.length) {
     const vFirst = candlesVwap[0];
     const vLast = candlesVwap[candlesVwap.length - 1];
     console.log(
-      `${symbol} VWAP $${vwap.toFixed(2)} (${candlesVwap.length} RTH 1m bars, ` +
-      `${getEtDateString(vFirst.datetime)} ${getEtHourMinute(vFirst.datetime).h}:${String(getEtHourMinute(vFirst.datetime).m).padStart(2, '0')}–` +
+      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} 1m, ` +
+      `${getEtHourMinute(vFirst.datetime).h}:${String(getEtHourMinute(vFirst.datetime).m).padStart(2, '0')}–` +
       `${getEtHourMinute(vLast.datetime).h}:${String(getEtHourMinute(vLast.datetime).m).padStart(2, '0')} ET)`
     );
   }
@@ -540,23 +604,24 @@ async function buildSignals(symbol) {
   return {
     symbol,
     price,
+    marketSession,
     macdHistogram: histValue,
     macdHistogramPct: histPct,
     macdHistogramStrength: histStrength,
     macdHistogramStrengthTier: histStrengthTier,
     buy: {
       up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP (5-min)?', value: price > vwap,     detail: `VWAP $${vwap?.toFixed(2)}` },
+      aboveVWAP: { label: 'Price above VWAP?',          value: price > vwap,     detail: `VWAP $${vwap?.toFixed(2)} (${vwapTag})` },
       ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,      detail: `EMA $${ema9?.toFixed(2)}` },
       volDry:    { label: 'Volume dried up?',           value: volDry,           detail: 'prev < 50% avg' },
       volSurge:  { label: 'Volume surge on candle?',    value: volSurge,         detail: 'cur > 150% avg' },
       pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,   detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',             value: price < vwap,  detail: `VWAP $${vwap?.toFixed(2)}` },
+      belowVWAP:  { label: 'Price below VWAP?',             value: price < vwap,  detail: `VWAP $${vwap?.toFixed(2)} (${vwapTag})` },
       belowEMA9:  { label: 'Price below 9 EMA?',            value: price < ema9,  detail: `EMA $${ema9?.toFixed(2)}` },
       macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
-      candleUnder:{ label: 'Candle closed below prev low?',  value: candleUnder,   detail: candleUnderDetail },
+      candleUnder:{ label: 'Close below prior low?',         value: candleUnder,   detail: candleUnderDetail },
       toppingTail:{ label: 'Topping tail detected?',         value: toppingTail,   detail: 'wick > 60% range' },
       vwapBreak:  { label: 'VWAP break in consolidation?',   value: vwapBreak,     detail: 'cross below VWAP' },
     }
