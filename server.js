@@ -118,7 +118,11 @@ async function getPriceHistory(symbol, periodType, period, frequencyType, freque
     headers: { 'Authorization': `Bearer ${accessToken}` },
     params
   });
-  return res.data.candles || [];
+  const candles = res.data.candles || [];
+  return candles.map(c => ({
+    ...c,
+    datetime: c.datetime < 1e12 ? c.datetime * 1000 : c.datetime
+  }));
 }
 
 const NY_TZ = 'America/New_York';
@@ -156,18 +160,39 @@ function utcFromEtDateTime(dateStr, hour, minute) {
   return hi;
 }
 
-const PRE_OPEN_ET  = 4 * 60;         // 4:00 AM — Schwab pre-market
-const RTH_OPEN_ET  = 9 * 60 + 30;    // 9:30 AM
-const RTH_CLOSE_ET = 16 * 60;        // 4:00 PM
-const POST_CLOSE_ET = 20 * 60;       // 8:00 PM — Schwab after-hours
+const ETH_OPEN_ET   = 4 * 60;        // Gatekeeper operating day: 4:00 AM ET
+const ETH_CLOSE_ET  = 20 * 60;       // through 8:00 PM ET
+const PRE_OPEN_ET   = ETH_OPEN_ET;   // PRE session starts at ETH open
+const RTH_OPEN_ET   = 9 * 60 + 30;   // 9:30 AM
+const RTH_CLOSE_ET  = 16 * 60;       // 4:00 PM
+const POST_CLOSE_ET = ETH_CLOSE_ET;  // POST ends at ETH close
+
+// Schwab pricehistory often omits 4:00–7:00 AM on the *current* day (TOS still shows it)
+const SCHWAB_PRE_DATA_ET = 7 * 60;
+
+function getEthDayBounds(now = Date.now()) {
+  const today = getEtDateString(now);
+  return {
+    today,
+    ethStartMs: utcFromEtDateTime(today, 4, 0),
+    ethEndMs: utcFromEtDateTime(today, 20, 0),
+    capEndMs: Math.min(now, utcFromEtDateTime(today, 20, 0))
+  };
+}
+
+function isGatekeeperOpen(now = Date.now()) {
+  const mins = getEtMinutes(now);
+  return mins >= ETH_OPEN_ET && mins < ETH_CLOSE_ET;
+}
 
 function getEtMinutes(ms) {
   const { h, m } = getEtHourMinute(ms);
   return h * 60 + m;
 }
 
-// PRE (4:00–9:30) | RTH (9:30–16:00) | POST (16:00–20:00) | CLOSED
+// PRE (4:00–9:30) | RTH (9:30–16:00) | POST (16:00–20:00) | CLOSED (outside 4 AM–8 PM)
 function getMarketSession(now = Date.now()) {
+  if (!isGatekeeperOpen(now)) return 'CLOSED';
   const mins = getEtMinutes(now);
   if (mins >= RTH_OPEN_ET && mins < RTH_CLOSE_ET) return 'RTH';
   if (mins >= PRE_OPEN_ET && mins < RTH_OPEN_ET) return 'PRE';
@@ -187,13 +212,13 @@ function getSessionConfig(now = Date.now()) {
 
   switch (session) {
     case 'PRE': {
-      const preStart = utcFromEtDateTime(today, 4, 0);
+      const { ethStartMs, capEndMs } = getEthDayBounds(now);
       return {
         session,
         tag: 'PRE',
         needExtendedHours: true,
-        vwapStartMs: preStart,
-        filterCandle: c => onToday(c) && c.datetime >= preStart && c.datetime <= now
+        vwapStartMs: ethStartMs,
+        filterCandle: c => onToday(c) && c.datetime >= ethStartMs && c.datetime <= capEndMs
       };
     }
     case 'RTH':
@@ -223,26 +248,23 @@ function getSessionConfig(now = Date.now()) {
   }
 }
 
-// TOS-style day VWAP: ETH from 4:00 AM through now (or 8:00 PM cap)
+// Day VWAP anchored at 4:00 AM ET through now (capped at 8:00 PM)
 function getVwapConfig(now = Date.now()) {
   const session = getMarketSession(now);
   if (session === 'CLOSED') return getSessionConfig(now);
 
-  const today = getEtDateString(now);
-  const ethStart = utcFromEtDateTime(today, 4, 0);
-  const ethEnd = utcFromEtDateTime(today, 20, 0);
-  const capEnd = Math.min(now, ethEnd);
+  const bounds = getEthDayBounds(now);
   const tag = session === 'POST' ? 'RTH+POST' : session;
 
   return {
     session,
     tag,
     needExtendedHours: true,
-    vwapStartMs: ethStart,
+    vwapStartMs: bounds.ethStartMs,
     filterCandle: c =>
-      getEtDateString(c.datetime) === today &&
-      c.datetime >= ethStart &&
-      c.datetime <= capEnd
+      getEtDateString(c.datetime) === bounds.today &&
+      c.datetime >= bounds.ethStartMs &&
+      c.datetime <= bounds.capEndMs
   };
 }
 
@@ -255,14 +277,15 @@ function formatEtHm(ms) {
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-// When Schwab's first bar is after 4:00 AM, VWAP won't match TOS (full ETH tape)
-function getVwapDataNote(candles, anchorMs) {
-  if (!candles.length) return null;
+// True when Schwab omitted early ETH (typical 4–7 AM gap on the current day)
+function isVwapPartialEth(candles, anchorMs) {
+  if (!candles.length) return true;
   const gapMs = 30 * 60 * 1000;
-  if (candles[0].datetime > anchorMs + gapMs) {
-    return `from ${formatEtHm(candles[0].datetime)} ET`;
-  }
-  return null;
+  return candles[0].datetime > anchorMs + gapMs;
+}
+
+function formatVwapTag(sessionTag, partialEth) {
+  return partialEth ? `${sessionTag} · 7AM start` : sessionTag;
 }
 
 function sortCandles(candles) {
@@ -302,51 +325,34 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
   return candles;
 }
 
-// Day VWAP from 4:00 AM ETH; uses finest bars Schwab returns (often 1m > 5m count)
+// 5m bars, requested from 4:00 AM ET (Schwab may only return ~7:00 AM+ on the current day)
 async function getVwapCandles(symbol, cfg = getVwapConfig()) {
   const endDate = Date.now();
-  const fetchBars = (freq, startMs) =>
-    getPriceHistory(symbol, 'day', 2, 'minute', freq, {
+  const fetch5m = startMs =>
+    getPriceHistory(symbol, 'day', 2, 'minute', 5, {
       startDate: startMs,
       endDate,
       needExtendedHoursData: true
     });
-  const filter = raw => sortCandles(raw).filter(cfg.filterCandle);
 
-  let c5 = filter(await fetchBars(5, cfg.vwapStartMs));
-  let c1 = filter(await fetchBars(1, cfg.vwapStartMs));
+  let candles = sortCandles(await fetch5m(cfg.vwapStartMs)).filter(cfg.filterCandle);
 
   const maxGapMs = 30 * 60 * 1000;
-  const needsWide = set => !set.length || set[0].datetime > cfg.vwapStartMs + maxGapMs;
-  if (needsWide(c5) || needsWide(c1)) {
-    const wideStart = endDate - 5 * 24 * 60 * 60 * 1000;
-    const w5 = filter(await fetchBars(5, wideStart));
-    const w1 = filter(await fetchBars(1, wideStart));
-    if (w5.length > c5.length) c5 = w5;
-    if (w1.length > c1.length) c1 = w1;
+  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + maxGapMs) {
+    const wide = sortCandles(await fetch5m(endDate - 5 * 24 * 60 * 60 * 1000)).filter(cfg.filterCandle);
+    if (wide.length > candles.length) candles = wide;
   }
 
-  let candles = c5;
-  let barSize = '5m';
-  let bucketMs = 5 * 60 * 1000;
-  if (
-    c1.length > 0 &&
-    (c5.length === 0 ||
-      c1[0].datetime < c5[0].datetime ||
-      (c1[0].datetime === c5[0].datetime && c1.length > c5.length))
-  ) {
-    candles = c1;
-    barSize = '1m';
-    bucketMs = 60 * 1000;
-  }
+  const partialEth = isVwapPartialEth(candles, cfg.vwapStartMs);
 
   return {
     candles,
-    tag: cfg.tag,
+    tag: formatVwapTag(cfg.tag, partialEth),
     session: cfg.session,
-    barSize,
-    bucketMs,
-    dataNote: getVwapDataNote(candles, cfg.vwapStartMs)
+    barSize: '5m',
+    bucketMs: 5 * 60 * 1000,
+    partialEth,
+    firstBarMs: candles[0]?.datetime ?? null
   };
 }
 
@@ -671,20 +677,18 @@ async function buildSignals(symbol) {
   const price      = quote.lastPrice;
   const prevClose  = quote.closePrice;
   const dayGainPct = ((price - prevClose) / prevClose) * 100;
-  const vwapDetailSuffix = vwapPack.dataNote ? `, ${vwapPack.dataNote}` : '';
-
   const vwap = calcVWAP(candlesVwap);
   if (vwap !== null && candlesVwap.length) {
     const vFirst = candlesVwap[0];
     const vLast = candlesVwap[candlesVwap.length - 1];
     console.log(
       `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} ${vwapPack.barSize}, ` +
-      `${formatEtHm(vFirst.datetime)}–${formatEtHm(vLast.datetime)} ET${vwapDetailSuffix})`
+      `${formatEtHm(vFirst.datetime)}–${formatEtHm(vLast.datetime)} ET)`
     );
-    if (vwapPack.dataNote) {
+    if (vwapPack.partialEth) {
       console.warn(
-        `${symbol} VWAP: Schwab pricehistory has no bars before ${vwapPack.dataNote} — ` +
-        `TOS/eth tape from 4:00 AM will differ`
+        `${symbol} VWAP: anchored 4:00 AM ET but Schwab feed starts ${formatEtHm(vFirst.datetime)} — ` +
+        `4:00–7:00 AM usually missing until later; TOS will differ`
       );
     }
   }
@@ -713,21 +717,21 @@ async function buildSignals(symbol) {
     symbol,
     price,
     marketSession,
-    vwapDataNote: vwapPack.dataNote,
+    vwapPartialEth: vwapPack.partialEth,
     macdHistogram: histValue,
     macdHistogramPct: histPct,
     macdHistogramStrength: histStrength,
     macdHistogramStrengthTier: histStrengthTier,
     buy: {
       up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP?',          value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag}${vwapDetailSuffix})` },
+      aboveVWAP: { label: 'Price above VWAP?',          value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
       ema9Up:    { label: '9 EMA sloping up (5-min)?', value: ema9Sloping,      detail: `EMA ${formatUsd(ema9)}` },
       volDry:    { label: 'Volume dried up?',           value: volDry,           detail: 'prev < 50% avg' },
       volSurge:  { label: 'Volume surge on candle?',    value: volSurge,         detail: 'cur > 150% avg' },
       pullback:  { label: 'Pullback ≤ 50% of move?',   value: pullback.valid,   detail: pullback.pct !== null ? `${pullback.pct.toFixed(0)}% retraced` : 'no pole found' },
     },
     sell: {
-      belowVWAP:  { label: 'Price below VWAP?',             value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag}${vwapDetailSuffix})` },
+      belowVWAP:  { label: 'Price below VWAP?',             value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
       belowEMA9:  { label: 'Price below 9 EMA?',            value: ema9 != null && price < ema9, detail: `EMA ${formatUsd(ema9)}` },
       macdNeg:    { label: 'MACD histogram negative?',       value: histNeg,       detail: histDetail },
       candleUnder:{ label: 'Close below prior low?',         value: candleUnder,   detail: candleUnderDetail },
@@ -754,7 +758,12 @@ app.get('/api/signals/:symbol', async (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  res.json({ authenticated: !!accessToken });
+  res.json({
+    authenticated: !!accessToken,
+    session: getMarketSession(),
+    open: isGatekeeperOpen(),
+    hoursEt: '4:00 AM – 8:00 PM'
+  });
 });
 
 app.use(express.static('public'));
