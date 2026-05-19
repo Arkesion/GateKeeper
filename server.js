@@ -167,6 +167,72 @@ function shouldPatchQuote(candles, quote) {
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
 
+// ~4 significant figures; scales decimals for NVDA-scale vs sub-penny histograms
+function formatMacdValue(value) {
+  if (!Number.isFinite(value)) return 'n/a';
+  if (value === 0) return '+0';
+
+  const sign = value >= 0 ? '+' : '-';
+  const abs = Math.abs(value);
+  if (abs >= 100) return sign + String(parseFloat(abs.toFixed(1)));
+
+  const decimals = Math.min(7, Math.max(2, 3 - Math.floor(Math.log10(abs))));
+  return sign + String(parseFloat(abs.toFixed(decimals)));
+}
+
+// Histogram as % of price — comparable across $0.01 names and $500 names (TOS Diff is still $)
+function macdHistogramPct(histogram, price) {
+  if (!Number.isFinite(histogram) || !Number.isFinite(price) || price <= 0) return null;
+  return (histogram / price) * 100;
+}
+
+function formatMacdPercent(histogram, price) {
+  const pct = macdHistogramPct(histogram, price);
+  if (pct === null) return 'n/a';
+  if (pct === 0) return '+0%';
+
+  const sign = pct >= 0 ? '+' : '';
+  const abs = Math.abs(pct);
+  if (abs >= 1) return sign + parseFloat(pct.toFixed(2)) + '%';
+  if (abs >= 0.01) return sign + parseFloat(pct.toFixed(3)) + '%';
+  return sign + parseFloat(pct.toFixed(4)) + '%';
+}
+
+// Full histogram series (signal EMA applied bar-by-bar, same as TOS Diff)
+function buildMacdHistogramSeries(macdValues) {
+  if (macdValues.length < 9) return [];
+  const k = 2 / 10;
+  let signal = calcEMAFromValues(macdValues.slice(0, 9), 9);
+  const series = [macdValues[8] - signal];
+  for (let i = 9; i < macdValues.length; i++) {
+    signal = macdValues[i] * k + signal * (1 - k);
+    series.push(macdValues[i] - signal);
+  }
+  return series;
+}
+
+// How tall the current bar is vs recent peaks on THIS symbol (like TOS auto-scaled MACD pane)
+function macdHistogramStrength(histogram, history, lookback = 390) {
+  if (!Number.isFinite(histogram) || !history?.length) return null;
+  const window = history.slice(-lookback);
+  const peak = Math.max(...window.map(h => Math.abs(h)), 1e-12);
+  return (histogram / peak) * 100;
+}
+
+function macdStrengthTier(strength) {
+  if (strength === null || !Number.isFinite(strength)) return null;
+  const a = Math.abs(strength);
+  if (a >= 75) return 'STRONG';
+  if (a >= 40) return 'MID';
+  return 'WEAK';
+}
+
+function formatMacdStrength(strength) {
+  if (strength === null || !Number.isFinite(strength)) return 'n/a';
+  const sign = strength >= 0 ? '+' : '';
+  return sign + Math.round(strength) + '%';
+}
+
 // EMA on candle array (uses .close)
 function calcEMA(candles, period) {
   if (candles.length < period) return null;
@@ -237,15 +303,19 @@ function calcMACD(candles, symbol) {
   if (signal === null) return null;
 
   const histogram = macdLine - signal;
+  const histogramSeries = buildMacdHistogramSeries(macdValues);
+  const strength = macdHistogramStrength(histogram, histogramSeries);
+
   const tag = symbol ? `${symbol} ` : '';
   const lastBar = sorted[sorted.length - 1];
   const lastTs = lastBar?.datetime ? new Date(lastBar.datetime).toISOString() : 'n/a';
+  const tier = macdStrengthTier(strength);
   console.log(
     `${tag}MACD (${sorted.length} bars, last ${lastTs} close=${lastBar?.close}) ` +
-    `line=${macdLine.toFixed(7)} signal=${signal.toFixed(7)} histogram=${histogram.toFixed(7)}`
+    `hist=${formatMacdValue(histogram)} ${tier} ${formatMacdStrength(strength)} of recent peak`
   );
 
-  return { line: macdLine, signal, histogram };
+  return { line: macdLine, signal, histogram, strength, strengthTier: tier, histogramSeries };
 }
 
 function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
@@ -334,10 +404,13 @@ async function buildSignals(symbol) {
   const vwapBreak   = checkVWAPBreakDuringConsolidation(candles5m, vwap);
 
   // Histogram: negative = bearish momentum, positive = bullish
-  const histValue  = macd?.histogram ?? null;
-  const histNeg    = histValue !== null ? histValue < 0 : false;
+  const histValue     = macd?.histogram ?? null;
+  const histPct       = histValue !== null ? macdHistogramPct(histValue, price) : null;
+  const histStrength  = macd?.strength ?? null;
+  const histStrengthTier = macd?.strengthTier ?? null;
+  const histNeg       = histValue !== null ? histValue < 0 : false;
   const histDetail = histValue !== null
-    ? `HIST ${histValue >= 0 ? '+' : ''}${histValue.toFixed(7)}`
+    ? `HIST ${histStrengthTier} ${formatMacdStrength(histStrength)} · ${formatMacdPercent(histValue, price)} px`
     : 'insufficient data';
 
   const currClose = candles5m[candles5m.length - 1].close;
@@ -346,6 +419,10 @@ async function buildSignals(symbol) {
   return {
     symbol,
     price,
+    macdHistogram: histValue,
+    macdHistogramPct: histPct,
+    macdHistogramStrength: histStrength,
+    macdHistogramStrengthTier: histStrengthTier,
     buy: {
       up10pct:   { label: 'Stock up 10%+ on day?',     value: dayGainPct >= 10, detail: `${dayGainPct.toFixed(1)}%` },
       aboveVWAP: { label: 'Price above VWAP (5-min)?', value: price > vwap,     detail: `VWAP $${vwap?.toFixed(2)}` },
