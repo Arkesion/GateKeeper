@@ -2,455 +2,756 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KQ-GateKeeper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     html, body {
       height: 100%;
       background: #000;
-      color: #00ff41;
-      font-family: 'Courier New', monospace;
-      font-size: 20px;
-      overflow: hidden;
+      color: #fff;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      overflow-x: hidden;
     }
 
     #app {
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
-      transform-origin: top left;
+      align-items: center;
+      padding: 16px 24px 32px;
+      gap: 20px;
     }
 
-    #ticker {
+    /* ── Ticker ── */
+    #ticker-wrap {
+      width: 100%;
       text-align: center;
-      font-size: 72px;
-      font-weight: bold;
-      color: #ffffff;
-      padding: 12px 0 4px;
-      letter-spacing: 8px;
-      line-height: 1;
-      cursor: text;
+      padding-top: 8px;
     }
 
     #ticker-input {
       background: transparent;
       border: none;
-      border-bottom: 2px solid #555;
-      color: #ffffff;
-      font-family: 'Courier New', monospace;
-      font-size: 72px;
-      font-weight: bold;
-      letter-spacing: 8px;
+      border-bottom: 2px solid #333;
+      color: #fff;
+      font-family: inherit;
+      font-size: 48px;
+      font-weight: 700;
+      letter-spacing: 6px;
       text-align: center;
-      width: 100%;
-      outline: none;
       text-transform: uppercase;
-      display: none;
+      width: 100%;
+      max-width: 480px;
+      outline: none;
     }
 
-    #ticker-input:focus { border-bottom-color: #00ff41; }
+    #ticker-input:focus { border-bottom-color: #00ff66; }
+    #ticker-input::placeholder { color: #444; letter-spacing: 4px; }
 
-    #price {
-      text-align: center;
-      font-size: 26px;
-      color: #aaaaaa;
-      padding: 4px 0 8px;
-      transition: color 0.2s;
-    }
-
-    .divider {
-      color: #555;
-      text-align: center;
-      font-size: 12px;
-      padding: 2px 0;
-      letter-spacing: 2px;
-      border-top: 1px solid #444;
-    }
-
-    #main {
-      flex: 1;
+    /* ── Traffic light ── */
+    #traffic-light {
+      width: min(80vw, 900px);
+      min-height: 140px;
       display: flex;
       flex-direction: column;
-      min-height: 0;
-    }
-
-    #columns {
-      display: flex;
-      flex: 1;
-      min-height: 0;
-    }
-
-    .col {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      padding: 10px 16px;
-      border-right: 1px solid #444;
-      overflow: hidden;
-    }
-
-    .col:last-child { border-right: none; }
-
-    .col-header {
-      text-align: center;
-      font-size: 20px;
-      font-weight: bold;
-      letter-spacing: 4px;
-      padding-bottom: 8px;
-    }
-
-    .buy-header  { color: #00ff41; }
-    .sell-header { color: #ff3333; }
-
-    .col-divider {
-      border-top: 1px dashed #444;
-      margin-bottom: 10px;
-    }
-
-    .signal-row {
-      display: flex;
-      justify-content: space-between;
       align-items: center;
-      padding: 9px 0;
-      border-bottom: 1px solid #1a1a1a;
+      justify-content: center;
+      padding: 28px 32px;
+      border-radius: 4px;
+      transition: background-color 0.35s ease;
+      background: #111;
+    }
+
+    #traffic-light.tl-in_play { background: #00ff66; }
+    #traffic-light.tl-caution { background: #ffaa00; }
+    #traffic-light.tl-back_side { background: #ff3333; }
+
+    #tl-headline {
+      font-size: clamp(36px, 6vw, 64px);
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 4px;
+      line-height: 1.1;
+    }
+
+    #tl-subtext {
+      font-size: clamp(14px, 2vw, 20px);
+      color: #fff;
+      opacity: 0.92;
+      margin-top: 10px;
+      text-align: center;
+      line-height: 1.4;
+      max-width: 90%;
+    }
+
+    /* ── Condition dots ── */
+    #dots-row {
+      display: flex;
+      justify-content: center;
+      gap: clamp(24px, 6vw, 64px);
+      flex-wrap: wrap;
+      width: min(90vw, 900px);
+    }
+
+    .dot-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       gap: 8px;
     }
 
-    .signal-left {
+    .dot {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: #333;
+      transition: background-color 0.3s ease;
+    }
+
+    .dot.dot-ok { background: #00ff66; }
+    .dot.dot-fail { background: #ff3333; }
+
+    .dot-label {
+      font-size: 12px;
+      color: #888;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    /* ── Warnings ── */
+    #warnings-stack {
+      width: min(90vw, 900px);
       display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 10px;
-      flex: 1;
+      min-height: 0;
     }
 
-    .signal-icon {
-      font-size: 22px;
-      font-weight: bold;
-      min-width: 24px;
-      text-align: center;
-      flex-shrink: 0;
-    }
-
-    .signal-label {
-      font-size: 18px;
-      flex: 1;
-      white-space: nowrap;
-    }
-
-    .signal-detail {
-      font-size: 14px;
-      opacity: 0.7;
-      text-align: right;
-      min-width: 100px;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-
-    .row-pass { color: #00ff41; }
-    .row-fail { color: #ff3333; }
-    .row-warn { color: #ffaa00; }
-
-    #verdicts {
-      display: flex;
-      border-top: 1px solid #444;
-    }
-
-    .verdict {
-      flex: 1;
-      text-align: center;
-      padding: 12px 4px;
+    .warning-row {
+      border: 1px solid #444;
+      padding: 14px 20px;
       font-size: 16px;
-      font-weight: bold;
-      letter-spacing: 2px;
-      border-right: 1px solid #444;
+      color: #ffaa00;
+      opacity: 0;
+      transition: opacity 0.35s ease;
     }
 
-    .verdict:last-child { border-right: none; }
-    .verdict-buy  { color: #00ff41; }
-    .verdict-hold { color: #ffaa00; }
-    .verdict-sell { color: #ff3333; }
-    .verdict-wait { color: #444444; }
+    .warning-row.warning-visible { opacity: 1; }
+    .warning-row.warning-exit { opacity: 0; }
 
-    #clockbar {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 10px 16px;
-      border-top: 1px solid #444;
-      background: #050505;
+    /* ── Context grid ── */
+    #context-grid {
+      width: min(95vw, 960px);
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: auto auto auto auto;
+      gap: 4px 16px;
+      margin-top: auto;
+      padding-top: 16px;
     }
 
-    #clock {
-      font-size: 96px;
-      font-weight: bold;
-      color: #ffffff;
-      letter-spacing: 4px;
+    .ctx-label {
+      font-size: 11px;
+      color: #888;
+      letter-spacing: 1px;
+      padding-bottom: 2px;
+    }
+
+    .ctx-value {
+      font-size: 18px;
+      color: #fff;
+      padding-bottom: 16px;
       font-variant-numeric: tabular-nums;
     }
 
-    #live-dot {
-      font-size: 13px;
-      color: #555;
-      margin-left: 20px;
+    /* ── Overlays ── */
+    #overlay-layer {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 100;
     }
 
-    #live-dot.active { color: #00ff41; }
-
-    #authPrompt {
-      flex: 1;
+    .overlay {
+      position: absolute;
+      inset: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 20px;
+      text-align: center;
+      padding: 24px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.4s ease, visibility 0.4s ease;
+      pointer-events: none;
     }
 
-    #authPrompt p {
-      color: #555;
-      font-size: 14px;
-      letter-spacing: 2px;
+    .overlay.overlay-active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
     }
 
-    #authBtn {
+    .overlay-title {
+      font-size: clamp(28px, 5vw, 48px);
+      font-weight: 700;
+      letter-spacing: 3px;
+      color: #fff;
+    }
+
+    .overlay-sub {
+      font-size: 16px;
+      color: #ccc;
+      margin-top: 12px;
+      max-width: 80%;
+      line-height: 1.5;
+    }
+
+    #overlay-waiting { background: rgba(0, 0, 0, 0.85); }
+    #overlay-stale { background: rgba(255, 170, 0, 0.25); }
+    #overlay-disconnected { background: rgba(255, 51, 51, 0.35); }
+    #overlay-auth { background: rgba(0, 0, 0, 0.9); }
+    #overlay-rate { background: rgba(0, 0, 0, 0.88); }
+
+    #reauth-btn {
+      margin-top: 24px;
+      display: inline-block;
       background: #000;
-      border: 1px solid #00ff41;
-      color: #00ff41;
-      font-family: 'Courier New', monospace;
-      font-size: 15px;
+      border: 1px solid #00ff66;
+      color: #00ff66;
+      font-family: inherit;
+      font-size: 14px;
       padding: 12px 28px;
-      cursor: pointer;
+      text-decoration: none;
       letter-spacing: 2px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
     }
 
-    #authBtn:hover { background: #00ff41; color: #000; }
+    #reauth-btn:hover { background: #00ff66; color: #000; }
   </style>
 </head>
 <body>
 <div id="app">
+  <div id="ticker-wrap">
+    <input id="ticker-input" type="text" maxlength="8" placeholder="SYMBOL" autocomplete="off" spellcheck="false">
+  </div>
 
-  <div id="ticker" onclick="startTickerEdit()" title="Click to change symbol">---</div>
-  <input id="ticker-input" type="text" maxlength="6" placeholder="SYMBOL"
-    onblur="commitTicker()"
-    onkeydown="if(event.key==='Enter') commitTicker()">
-  <div id="price">waiting...</div>
-  <div class="divider">════════════════════════════════════════════════════════════</div>
+  <div id="traffic-light">
+    <div id="tl-headline">—</div>
+    <div id="tl-subtext"></div>
+  </div>
 
-  <div id="main">
-    <div id="authPrompt">
-      <p>NOT AUTHENTICATED</p>
-      <button id="authBtn" onclick="authenticate()">[ LOGIN WITH SCHWAB ]</button>
-      <p id="authStatus"></p>
+  <div id="dots-row">
+    <div class="dot-cell">
+      <div class="dot" id="dot-emas"></div>
+      <span class="dot-label">9/20 EMA (5m)</span>
+    </div>
+    <div class="dot-cell">
+      <div class="dot" id="dot-macd"></div>
+      <span class="dot-label">MACD (1m)</span>
+    </div>
+    <div class="dot-cell">
+      <div class="dot" id="dot-vwap"></div>
+      <span class="dot-label">VWAP</span>
+    </div>
+    <div class="dot-cell">
+      <div class="dot" id="dot-hh"></div>
+      <span class="dot-label">Higher Highs</span>
     </div>
   </div>
 
-  <div id="clockbar">
-    <span id="clock">--:--:-- --</span>
-    <span id="live-dot">● OFFLINE</span>
+  <div id="warnings-stack"></div>
+
+  <div id="context-grid">
+    <div class="ctx-label">PRICE</div>
+    <div class="ctx-label">DAY CHG</div>
+    <div class="ctx-label">VWAP Δ</div>
+    <div class="ctx-label">RVOL</div>
+    <div class="ctx-value" id="ctx-price">—</div>
+    <div class="ctx-value" id="ctx-day-chg">—</div>
+    <div class="ctx-value" id="ctx-vwap-d">—</div>
+    <div class="ctx-value" id="ctx-rvol">—</div>
+
+    <div class="ctx-label">9 EMA (5m)</div>
+    <div class="ctx-label">20 EMA (5m)</div>
+    <div class="ctx-label">MACD HIST</div>
+    <div class="ctx-label">SESSION</div>
+    <div class="ctx-value" id="ctx-ema9">—</div>
+    <div class="ctx-value" id="ctx-ema20">—</div>
+    <div class="ctx-value" id="ctx-macd">—</div>
+    <div class="ctx-value" id="ctx-session">—</div>
   </div>
-
 </div>
+
+<div id="overlay-layer">
+  <div class="overlay" id="overlay-waiting" data-id="waiting">
+    <div class="overlay-title">WAITING FOR DATA</div>
+    <div class="overlay-sub" id="overlay-waiting-sub"></div>
+  </div>
+  <div class="overlay" id="overlay-stale" data-id="stale">
+    <div class="overlay-title">DATA STALE</div>
+  </div>
+  <div class="overlay" id="overlay-disconnected" data-id="disconnected">
+    <div class="overlay-title">DISCONNECTED</div>
+  </div>
+  <div class="overlay" id="overlay-auth" data-id="auth">
+    <div class="overlay-title">AUTH FAILED — re-login</div>
+    <a id="reauth-btn" href="/api/login" target="_blank">Re-authenticate</a>
+  </div>
+  <div class="overlay" id="overlay-rate" data-id="rate">
+    <div class="overlay-title">RATE LIMITED — backing off</div>
+  </div>
+</div>
+
 <script>
-  let currentSymbol = null;
-  let pollInterval  = null;
-  let authenticated = false;
+  const STORAGE_KEY = 'gatekeeper_last_symbol';
+  // Reads backend-cached state; Schwab fetches run on server timers (5s quote / 15s candles).
+  const STATE_POLL_MS = 5000;
+  const HEALTH_POLL_MS = 30000;
+  const STALE_MS = 10000;
+  const DISCONNECT_MS = 60000;
 
-  // ── AUTO SCALE ─────────────────────────────────────────────
-  function autoScale() {
-    const app = document.getElementById('app');
-    app.style.transform = '';
-    app.style.width     = '100%';
-    app.style.height    = '100vh';
-    const scaleX = window.innerWidth  / app.scrollWidth;
-    const scaleY = window.innerHeight / app.scrollHeight;
-    const scale  = Math.min(scaleX, scaleY);
-    if (scale < 1) {
-      app.style.transform = `scale(${scale})`;
-      app.style.width     = `${100 / scale}%`;
-      app.style.height    = `${100 / scale}vh`;
+  const CONDITION_LABELS = {
+    emas: '9/20 EMA cross',
+    macd: 'MACD histogram',
+    vwap: 'Price vs VWAP',
+    hh: 'Higher highs'
+  };
+
+  const DOT_IDS = { emas: 'dot-emas', macd: 'dot-macd', vwap: 'dot-vwap', hh: 'dot-hh' };
+
+  const WARNING_TEXT = {
+    topping_tail: (t) => `⚠ Topping tail — 1m bar ${t}`,
+    doji: (t) => `⚠ Doji — 1m bar ${t}`,
+    momentum_exhaustion: () => '⚠ Shrinking candles — momentum exhausting',
+    tape_slowdown: () => '⚠ Tape slowdown — volume contracting',
+    lost_20_ema: () => '⚠ Lost 20 EMA on 1-min — back side forming'
+  };
+
+  let symbol = '';
+  let stateTimer = null;
+  let healthTimer = null;
+  let overlayTimer = null;
+  let lastSuccessAt = null;
+  let pollStartedAt = null;
+  let hasReceivedOk = false;
+  let waitingForData = true;
+  let insufficientMissing = [];
+  let healthData = { authenticated: true, rate_limit_status: 'ok' };
+  let stateAuthFailed = false;
+  let activeOverlayId = null;
+  const warningState = new Map();
+
+  const tickerInput = document.getElementById('ticker-input');
+  const trafficLight = document.getElementById('traffic-light');
+  const tlHeadline = document.getElementById('tl-headline');
+  const tlSubtext = document.getElementById('tl-subtext');
+  const warningsStack = document.getElementById('warnings-stack');
+  const overlayEls = {
+    waiting: document.getElementById('overlay-waiting'),
+    stale: document.getElementById('overlay-stale'),
+    disconnected: document.getElementById('overlay-disconnected'),
+    auth: document.getElementById('overlay-auth'),
+    rate: document.getElementById('overlay-rate')
+  };
+
+  function formatBarTimeEt() {
+    const now = new Date();
+    const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    et.setMinutes(et.getMinutes() - 1);
+    const h = et.getHours();
+    const m = et.getMinutes();
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
+  function formatMoney(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    return `$${n.toFixed(2)}`;
+  }
+
+  function formatSignedPct(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    const sign = n >= 0 ? '+' : '';
+    return `${sign}${n.toFixed(2)}%`;
+  }
+
+  function formatVwapDelta(dollars, pct) {
+    if (dollars == null || !Number.isFinite(dollars) || pct == null || !Number.isFinite(pct)) return '—';
+    const ds = dollars >= 0 ? '+' : '';
+    const ps = pct >= 0 ? '+' : '';
+    return `${ds}$${Math.abs(dollars).toFixed(2)} (${ps}${pct.toFixed(2)}%)`;
+  }
+
+  function formatRvol(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    return `${n.toFixed(1)}x`;
+  }
+
+  function formatMacdHist(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    const sign = n >= 0 ? '+' : '-';
+    return `${sign}${Math.abs(n).toFixed(4)}`;
+  }
+
+  function failingConditions(frontSide) {
+    if (!frontSide) return [];
+    return Object.entries(frontSide)
+      .filter(([, v]) => !v)
+      .map(([k]) => CONDITION_LABELS[k]);
+  }
+
+  function trafficLightSubtext(confirmed, frontSide) {
+    const met = frontSide
+      ? Object.values(frontSide).filter(Boolean).length
+      : 0;
+    const failing = failingConditions(frontSide);
+    const failStr = failing.join(', ');
+
+    if (confirmed === 'IN_PLAY') return 'All 4 conditions met';
+    if (confirmed === 'CAUTION') {
+      return `${met}/4 conditions met — ${failStr || '—'}`;
+    }
+    if (confirmed === 'BACK_SIDE') {
+      return `Walk away — ${failStr || '—'}`;
+    }
+    return '';
+  }
+
+  function setTrafficLightNeutral() {
+    trafficLight.className = '';
+    tlHeadline.textContent = '—';
+    tlSubtext.textContent = '';
+  }
+
+  function renderTrafficLight(confirmed, frontSide) {
+    const cls = {
+      IN_PLAY: 'tl-in_play',
+      CAUTION: 'tl-caution',
+      BACK_SIDE: 'tl-back_side'
+    }[confirmed] || '';
+    trafficLight.className = cls;
+    const titles = {
+      IN_PLAY: 'IN PLAY',
+      CAUTION: 'CAUTION',
+      BACK_SIDE: 'BACK SIDE'
+    };
+    tlHeadline.textContent = titles[confirmed] || '—';
+    tlSubtext.textContent = trafficLightSubtext(confirmed, frontSide);
+  }
+
+  function renderDots(frontSide) {
+    for (const [key, id] of Object.entries(DOT_IDS)) {
+      const el = document.getElementById(id);
+      el.className = 'dot';
+      if (!frontSide || frontSide[key] == null) continue;
+      el.classList.add(frontSide[key] ? 'dot-ok' : 'dot-fail');
     }
   }
 
-  window.addEventListener('resize', autoScale);
-
-  // ── CLOCK ──────────────────────────────────────────────────
-  function startClock() {
-    function tick() {
-      document.getElementById('clock').textContent =
-        new Date().toLocaleTimeString('en-US', {
-          hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
-    }
-    tick();
-    setInterval(tick, 1000);
-  }
-
-  startClock();
-
-  // ── TICKER EDIT ────────────────────────────────────────────
-  function startTickerEdit() {
-    if (!authenticated) return;
-    const display = document.getElementById('ticker');
-    const input   = document.getElementById('ticker-input');
-    display.style.display = 'none';
-    input.style.display   = 'block';
-    input.value = currentSymbol || '';
-    input.focus();
-    input.select();
-  }
-
-  function commitTicker() {
-    const display = document.getElementById('ticker');
-    const input   = document.getElementById('ticker-input');
-    const val     = input.value.trim().toUpperCase();
-    input.style.display   = 'none';
-    display.style.display = 'block';
-    if (val && val !== currentSymbol) {
-      currentSymbol = val;
-      display.textContent = val;
-      if (pollInterval) clearInterval(pollInterval);
-      const dot = document.getElementById('live-dot');
-      dot.textContent = '● POLLING';
-      dot.className   = '';
-      fetchSignals();
-      pollInterval = setInterval(fetchSignals, 2000);
+  function clearDots() {
+    for (const id of Object.values(DOT_IDS)) {
+      document.getElementById(id).className = 'dot';
     }
   }
 
-  // ── AUTH ───────────────────────────────────────────────────
-  async function checkAuth() {
-    const res  = await fetch('/api/status');
-    const data = await res.json();
-    authenticated = data.authenticated;
-    if (authenticated) showPanel();
+  function renderContext(ctx) {
+    document.getElementById('ctx-price').textContent = formatMoney(ctx?.price);
+    document.getElementById('ctx-day-chg').textContent = formatSignedPct(ctx?.day_change_pct);
+    document.getElementById('ctx-vwap-d').textContent = formatVwapDelta(
+      ctx?.vwap_delta_dollars, ctx?.vwap_delta_pct
+    );
+    document.getElementById('ctx-rvol').textContent = formatRvol(ctx?.rvol_1m);
+    document.getElementById('ctx-ema9').textContent = formatMoney(ctx?.ema9_5m_value);
+    document.getElementById('ctx-ema20').textContent = formatMoney(ctx?.ema20_5m_value);
+    document.getElementById('ctx-macd').textContent = formatMacdHist(ctx?.macd_histogram_value);
+    document.getElementById('ctx-session').textContent = ctx?.market_session ?? '—';
   }
 
-  function authenticate() {
-    document.getElementById('authStatus').textContent = 'Opening Schwab login...';
-    window.open('/login', '_blank', 'width=600,height=700');
-    const check = setInterval(async () => {
-      const res  = await fetch('/api/status');
-      const data = await res.json();
-      if (data.authenticated) {
-        clearInterval(check);
-        authenticated = true;
-        showPanel();
+  function clearContext() {
+    for (const id of [
+      'ctx-price', 'ctx-day-chg', 'ctx-vwap-d', 'ctx-rvol',
+      'ctx-ema9', 'ctx-ema20', 'ctx-macd', 'ctx-session'
+    ]) {
+      document.getElementById(id).textContent = '—';
+    }
+  }
+
+  function warningDisplayText(code) {
+    const barTime = formatBarTimeEt();
+    const fn = WARNING_TEXT[code];
+    if (!fn) return `⚠ ${code}`;
+    return fn(barTime);
+  }
+
+  function removeWarningEl(code) {
+    const entry = warningState.get(code);
+    if (!entry) return;
+    if (entry.el.parentNode) entry.el.remove();
+    warningState.delete(code);
+  }
+
+  function trimWarningsToMax(max) {
+    while (warningsStack.children.length > max) {
+      const oldest = warningsStack.firstElementChild;
+      if (!oldest) break;
+      for (const [code, entry] of warningState) {
+        if (entry.el === oldest) {
+          warningState.delete(code);
+          break;
+        }
       }
-    }, 2000);
+      oldest.remove();
+    }
   }
 
-  function showPanel() {
-    document.getElementById('main').innerHTML = `
-      <div id="columns">
-        <div class="col">
-          <div class="col-header buy-header">BUY</div>
-          <div class="col-divider"></div>
-          <div id="buyRows"></div>
-        </div>
-        <div class="col">
-          <div class="col-header sell-header">SELL</div>
-          <div class="col-divider"></div>
-          <div id="sellRows"></div>
-        </div>
-      </div>
-      <div id="verdicts">
-        <div class="verdict verdict-wait" id="buyVerdict">VERDICT: —</div>
-        <div class="verdict verdict-wait" id="sellVerdict">VERDICT: —</div>
-      </div>
-    `;
-    document.getElementById('live-dot').textContent = '● READY';
-    autoScale();
+  function syncWarnings(codes) {
+    const incoming = new Set(codes || []);
+    const barTime = formatBarTimeEt();
+
+    for (const code of incoming) {
+      let entry = warningState.get(code);
+      if (!entry) {
+        trimWarningsToMax(2);
+        const el = document.createElement('div');
+        el.className = 'warning-row';
+        el.textContent = warningDisplayText(code);
+        warningsStack.appendChild(el);
+        requestAnimationFrame(() => el.classList.add('warning-visible'));
+        entry = { el, missCount: 0 };
+        warningState.set(code, entry);
+      } else {
+        entry.missCount = 0;
+        entry.el.textContent = WARNING_TEXT[code]
+          ? WARNING_TEXT[code](barTime)
+          : `⚠ ${code}`;
+        if (!entry.el.classList.contains('warning-visible')) {
+          entry.el.classList.add('warning-visible');
+        }
+        entry.el.classList.remove('warning-exit');
+      }
+    }
+
+    for (const [code, entry] of warningState) {
+      if (incoming.has(code)) continue;
+      entry.missCount += 1;
+      if (entry.missCount >= 2) {
+        entry.el.classList.remove('warning-visible');
+        entry.el.classList.add('warning-exit');
+        const onEnd = (e) => {
+          if (e.propertyName !== 'opacity') return;
+          entry.el.removeEventListener('transitionend', onEnd);
+          removeWarningEl(code);
+        };
+        entry.el.addEventListener('transitionend', onEnd);
+      }
+    }
   }
 
-  // ── SIGNALS ────────────────────────────────────────────────
-  async function fetchSignals() {
-  if (!currentSymbol) return;
-  try {
-    const res = await fetch(`/api/signals/${currentSymbol}`);
-    if (res.status === 429) {
-      const dot = document.getElementById('live-dot');
-      dot.textContent = '● RATE LIMITED — waiting 30s';
-      dot.className = '';
-      clearInterval(pollInterval);
-      setTimeout(() => {
-        pollInterval = setInterval(fetchSignals, 2000);
-      }, 30000);
+  function clearWarnings() {
+    warningState.clear();
+    warningsStack.innerHTML = '';
+  }
+
+  function resetDisplay() {
+    hasReceivedOk = false;
+    waitingForData = true;
+    insufficientMissing = [];
+    lastSuccessAt = null;
+    stateAuthFailed = false;
+    setTrafficLightNeutral();
+    clearDots();
+    clearWarnings();
+    clearContext();
+    document.getElementById('overlay-waiting-sub').textContent = '';
+    updateOverlays();
+  }
+
+  function resolveOverlayId() {
+    if (healthData.authenticated === false || stateAuthFailed) return 'auth';
+    if (healthData.rate_limit_status === 'backing_off') return 'rate';
+    if (waitingForData || !hasReceivedOk) return 'waiting';
+
+    const now = Date.now();
+    if (symbol) {
+      const ref = lastSuccessAt ?? pollStartedAt;
+      if (ref != null) {
+        const age = now - ref;
+        if (!hasReceivedOk && age > DISCONNECT_MS) return 'disconnected';
+        if (hasReceivedOk && age > DISCONNECT_MS) return 'disconnected';
+        if (hasReceivedOk && age > STALE_MS) return 'stale';
+      }
+    }
+    return null;
+  }
+
+  function updateOverlays() {
+    const nextId = resolveOverlayId();
+    if (nextId === activeOverlayId) {
+      if (nextId === 'waiting') {
+        const sub = document.getElementById('overlay-waiting-sub');
+        sub.textContent = insufficientMissing.length
+          ? insufficientMissing.join(', ')
+          : '';
+      }
       return;
     }
-    if (!res.ok) return;
-    renderSignals(await res.json());
-  } catch {
-      const dot = document.getElementById('live-dot');
-      dot.textContent = '● ERROR';
-      dot.className   = '';
+
+    for (const el of Object.values(overlayEls)) {
+      el.classList.remove('overlay-active');
+    }
+
+    activeOverlayId = nextId;
+
+    if (nextId && overlayEls[nextId]) {
+      overlayEls[nextId].classList.add('overlay-active');
+      if (nextId === 'waiting') {
+        const sub = document.getElementById('overlay-waiting-sub');
+        sub.textContent = insufficientMissing.length
+          ? insufficientMissing.join(', ')
+          : '';
+      }
     }
   }
 
-  function renderSignals(data) {
-    const priceEl  = document.getElementById('price');
-    const newPrice = data.price;
-    const oldPrice = parseFloat(priceEl.dataset.last || newPrice);
-    priceEl.textContent  = `$${newPrice?.toFixed(2) || '---'}`;
-    priceEl.style.color  = newPrice > oldPrice ? '#00ff41' : newPrice < oldPrice ? '#ff3333' : '#aaaaaa';
-    priceEl.dataset.last = newPrice;
-
-    const buyRows = document.getElementById('buyRows');
-    buyRows.innerHTML = '';
-    let buyPass = 0;
-    for (const [, sig] of Object.entries(data.buy)) {
-      if (sig.value) buyPass++;
-      const cls = sig.value ? 'row-pass' : 'row-fail';
-      buyRows.innerHTML += `
-        <div class="signal-row ${cls}">
-          <span class="signal-label">${sig.label}</span>
-          <span class="signal-detail">${sig.detail}</span>
-          <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
-        </div>`;
+  async function pollHealth() {
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) return;
+      healthData = await res.json();
+      updateOverlays();
+    } catch {
+      /* keep last health */
     }
-
-    const sellRows = document.getElementById('sellRows');
-    sellRows.innerHTML = '';
-    let sellFire = 0;
-    for (const [, sig] of Object.entries(data.sell)) {
-      if (sig.value) sellFire++;
-      const cls = sig.value ? 'row-fail' : 'row-pass';
-      sellRows.innerHTML += `
-        <div class="signal-row ${cls}">
-          <span class="signal-label">${sig.label}</span>
-          <span class="signal-detail">${sig.detail}</span>
-          <span class="signal-icon">${sig.value ? '✓' : '✗'}</span>
-        </div>`;
-    }
-
-    const buyV  = document.getElementById('buyVerdict');
-    const sellV = document.getElementById('sellVerdict');
-
-    if (buyPass === 6) {
-      buyV.textContent = '⚡ SETUP READY — WATCH TAPE';
-      buyV.className   = 'verdict verdict-buy';
-    } else {
-      buyV.textContent = `VERDICT: ${buyPass}/6 CONDITIONS MET`;
-      buyV.className   = 'verdict verdict-wait';
-    }
-
-    if (sellFire >= 2) {
-      sellV.textContent = '🔴 EXIT SIGNAL — SELL NOW';
-      sellV.className   = 'verdict verdict-sell';
-    } else if (sellFire === 1) {
-      sellV.textContent = '⚠ CAUTION — WATCH TAPE';
-      sellV.className   = 'verdict verdict-hold';
-    } else {
-      sellV.textContent = 'VERDICT: HOLD ✓';
-      sellV.className   = 'verdict verdict-buy';
-    }
-
-    const dot = document.getElementById('live-dot');
-    dot.textContent = '● LIVE';
-    dot.className   = 'active';
   }
 
-  checkAuth();
-  autoScale();
+  async function pollState() {
+    if (!symbol) return;
+
+    try {
+      const res = await fetch(`/api/state/${encodeURIComponent(symbol)}`);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        updateOverlays();
+        return;
+      }
+
+      if (data?.status === 'auth_failed') {
+        stateAuthFailed = true;
+        waitingForData = true;
+        updateOverlays();
+        return;
+      }
+
+      stateAuthFailed = false;
+
+      if (data?.status === 'insufficient_data') {
+        waitingForData = true;
+        insufficientMissing = data.missing || [];
+        hasReceivedOk = false;
+        updateOverlays();
+        return;
+      }
+
+      if (data?.status === 'rate_limited') {
+        updateOverlays();
+        return;
+      }
+
+      if (!res.ok || data?.status !== 'ok') {
+        updateOverlays();
+        return;
+      }
+
+      waitingForData = false;
+      insufficientMissing = [];
+      hasReceivedOk = true;
+      lastSuccessAt = Date.now();
+
+      renderTrafficLight(data.traffic_light_confirmed, data.front_side);
+      renderDots(data.front_side);
+      syncWarnings(data.warnings);
+      renderContext(data.context);
+      updateOverlays();
+    } catch {
+      updateOverlays();
+    }
+  }
+
+  function stopStatePolling() {
+    if (stateTimer) {
+      clearInterval(stateTimer);
+      stateTimer = null;
+    }
+  }
+
+  function startStatePolling() {
+    stopStatePolling();
+    if (!symbol) return;
+    pollStartedAt = Date.now();
+    pollState();
+    stateTimer = setInterval(pollState, STATE_POLL_MS);
+  }
+
+  function onTickerCommit() {
+    const val = tickerInput.value.trim().toUpperCase();
+    tickerInput.value = val;
+    if (!val) {
+      symbol = '';
+      localStorage.removeItem(STORAGE_KEY);
+      stopStatePolling();
+      resetDisplay();
+      return;
+    }
+    if (val === symbol) return;
+
+    symbol = val;
+    localStorage.setItem(STORAGE_KEY, val);
+    resetDisplay();
+    startStatePolling();
+  }
+
+  tickerInput.addEventListener('change', onTickerCommit);
+  tickerInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      tickerInput.blur();
+      onTickerCommit();
+    }
+  });
+  tickerInput.addEventListener('blur', onTickerCommit);
+
+  function init() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      tickerInput.value = saved;
+      symbol = saved;
+    }
+
+    overlayEls.waiting.classList.add('overlay-active');
+    activeOverlayId = 'waiting';
+
+    pollHealth();
+    healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
+    overlayTimer = setInterval(updateOverlays, 1000);
+
+    if (symbol) {
+      startStatePolling();
+    } else {
+      waitingForData = true;
+      updateOverlays();
+    }
+  }
+
+  init();
 </script>
 </body>
 </html>

@@ -14,6 +14,44 @@ let accessToken = null;
 let refreshToken = null;
 let tokenExpiry = null;
 
+let authenticated = false;
+let lastSuccessfulFetch = null;
+let rateLimitStatus = 'ok';
+let rateLimitBackoffStep = 0;
+let rateLimitBackoffUntil = 0;
+let rateLimitBackoffPromise = null;
+
+const stateCache = {};
+
+const QUOTE_POLL_MS = 5000;
+const CANDLE_POLL_MS = 15000;
+
+let activeSymbol = null;
+const refreshTimers = { quote: null, candles: null };
+const refreshInFlight = { quote: false, candles: false };
+const marketDataCache = {};
+const responseCache = {};
+
+const BACKOFF_MS = [5000, 10000, 20000];
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+class SchwabError extends Error {
+  constructor(code, message, status = 500) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function markFetchSuccess() {
+  lastSuccessfulFetch = new Date().toISOString();
+  rateLimitStatus = 'ok';
+  rateLimitBackoffStep = 0;
+}
+
 function saveTokens() {
   try {
     fs.writeFileSync(TOKEN_FILE, JSON.stringify({ accessToken, refreshToken, tokenExpiry }));
@@ -49,10 +87,13 @@ const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
 const redirectUri  = process.env.REDIRECT_URI;
 const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-app.get('/login', (req, res) => {
+function redirectToSchwabLogin(req, res) {
   const authUrl = `${SCHWAB_AUTH_URL}?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   res.redirect(authUrl);
-});
+}
+
+app.get('/login', redirectToSchwabLogin);
+app.get('/api/login', redirectToSchwabLogin);
 
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
@@ -66,6 +107,7 @@ app.get('/callback', async (req, res) => {
     refreshToken = response.data.refresh_token;
     tokenExpiry  = Date.now() + (response.data.expires_in * 1000);
     saveTokens();
+    authenticated = true;
     console.log('✅ Authenticated with Schwab');
     res.send('<script>window.close();</script>Authenticated! You can close this window.');
   } catch (err) {
@@ -74,31 +116,168 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-async function ensureToken() {
-  if (!accessToken) throw new Error('Not authenticated');
-  if (Date.now() < tokenExpiry - 60000) return;
-  const response = await axios.post(SCHWAB_TOKEN_URL,
-    new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
-    { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
-  accessToken = response.data.access_token;
-  tokenExpiry = Date.now() + (response.data.expires_in * 1000);
-  saveTokens();
-  console.log('🔄 Token refreshed');
+async function refreshAccessToken({ force = false } = {}) {
+  if (!refreshToken) {
+    authenticated = false;
+    return false;
+  }
+  if (!force && accessToken && tokenExpiry && Date.now() < tokenExpiry - 60000) {
+    return true;
+  }
+  try {
+    const response = await axios.post(SCHWAB_TOKEN_URL,
+      new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+      { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    accessToken = response.data.access_token;
+    if (response.data.refresh_token) refreshToken = response.data.refresh_token;
+    tokenExpiry = Date.now() + (response.data.expires_in * 1000);
+    saveTokens();
+    authenticated = true;
+    console.log('🔄 Token refreshed');
+    return true;
+  } catch (err) {
+    console.error('Token refresh failed:', err.response?.status, err.response?.data || err.message);
+    authenticated = false;
+    return false;
+  }
+}
+
+async function probeSchwabAuth() {
+  if (!(await refreshAccessToken({ force: true }))) return false;
+  try {
+    const res = await axios.get(`${MARKET_DATA_URL}/quotes`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+      params: { symbols: 'SPY', fields: 'quote' },
+      validateStatus: () => true
+    });
+    if (res.status === 200) {
+      markFetchSuccess();
+      return true;
+    }
+    console.warn('Auth probe failed:', res.status);
+    return false;
+  } catch (err) {
+    console.warn('Auth probe error:', err.message);
+    return false;
+  }
+}
+
+async function enterRateLimitBackoff() {
+  if (rateLimitBackoffPromise) {
+    await rateLimitBackoffPromise;
+    return;
+  }
+  rateLimitBackoffPromise = (async () => {
+    rateLimitStatus = 'backing_off';
+    const waitMs = BACKOFF_MS[Math.min(rateLimitBackoffStep, 2)];
+    rateLimitBackoffStep = Math.min(rateLimitBackoffStep + 1, 2);
+    rateLimitBackoffUntil = Date.now() + waitMs;
+    console.warn(`⚠️ Schwab 429 — backing off ${waitMs / 1000}s`);
+    await delay(waitMs);
+    if (waitMs === 20000) {
+      await probeSchwabAuth();
+    }
+  })().finally(() => {
+    rateLimitBackoffPromise = null;
+  });
+  await rateLimitBackoffPromise;
+}
+
+function schwabResultToError(result) {
+  if (result.error === 'auth_failed') {
+    return new SchwabError('auth_failed', 'Authentication failed', result.status || 401);
+  }
+  if (result.status === 429 || result.error === 'rate_limited') {
+    return new SchwabError('rate_limited', 'Rate limited', 429);
+  }
+  return new SchwabError('schwab_error', result.error || 'Schwab request failed', result.status || 500);
+}
+
+async function schwabFetch(url, options = {}) {
+  if (!url.startsWith(MARKET_DATA_URL)) {
+    return { ok: false, status: 400, error: 'invalid_schwab_url' };
+  }
+
+  if (!authenticated) {
+    return { ok: false, status: 401, error: 'auth_failed' };
+  }
+
+  if (!(await refreshAccessToken())) {
+    return { ok: false, status: 401, error: 'auth_failed' };
+  }
+
+  if (rateLimitBackoffPromise) {
+    await rateLimitBackoffPromise;
+  } else if (rateLimitStatus === 'backing_off' && Date.now() < rateLimitBackoffUntil) {
+    await delay(rateLimitBackoffUntil - Date.now());
+  }
+
+  async function requestOnce() {
+    return axios.request({
+      url,
+      method: options.method || 'GET',
+      params: options.params,
+      headers: { Authorization: `Bearer ${accessToken}`, ...options.headers },
+      validateStatus: () => true
+    });
+  }
+
+  let res = await requestOnce();
+
+  function logSchwabOk() {
+    const path = new URL(url).pathname;
+    const sym = options.params?.symbols || options.params?.symbol || '';
+    console.log('[Schwab]', path, sym);
+  }
+
+  if (res.status === 200) {
+    markFetchSuccess();
+    logSchwabOk();
+    return { ok: true, status: 200, data: res.data };
+  }
+
+  if (res.status === 401) {
+    if (!(await refreshAccessToken({ force: true }))) {
+      return { ok: false, status: 401, error: 'auth_failed' };
+    }
+    res = await requestOnce();
+    if (res.status === 200) {
+      markFetchSuccess();
+      logSchwabOk();
+      return { ok: true, status: 200, data: res.data };
+    }
+    console.error('Schwab 401 after token refresh:', res.status);
+    return { ok: false, status: res.status || 401, error: 'schwab_unauthorized' };
+  }
+
+  if (res.status === 429) {
+    await enterRateLimitBackoff();
+    res = await requestOnce();
+    if (res.status === 200) {
+      markFetchSuccess();
+      logSchwabOk();
+      return { ok: true, status: 200, data: res.data };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: 429, error: 'rate_limited' };
+    }
+  }
+
+  const errMsg = res.data?.message || res.statusText || `HTTP ${res.status}`;
+  return { ok: false, status: res.status || 500, error: errMsg };
 }
 
 // ── MARKET DATA ───────────────────────────────────────────────
 async function getQuote(symbol) {
-  await ensureToken();
-  const res = await axios.get(`${MARKET_DATA_URL}/quotes`, {
-    headers: { 'Authorization': `Bearer ${accessToken}` },
-    params:  { symbols: symbol, fields: 'quote,fundamental' }
+  const result = await schwabFetch(`${MARKET_DATA_URL}/quotes`, {
+    params: { symbols: symbol, fields: 'quote,fundamental' }
   });
-  return res.data[symbol]?.quote || null;
+  if (!result.ok) throw schwabResultToError(result);
+  return result.data[symbol]?.quote || null;
 }
 
 async function getPriceHistory(symbol, periodType, period, frequencyType, frequency, opts = {}) {
-  await ensureToken();
   const { needExtendedHoursData = false, startDate, endDate } = opts;
 
   const params = { symbol, frequencyType, frequency, needExtendedHoursData };
@@ -114,11 +293,9 @@ async function getPriceHistory(symbol, periodType, period, frequencyType, freque
     if (endDate != null) params.endDate = endDate;
   }
 
-  const res = await axios.get(`${MARKET_DATA_URL}/pricehistory`, {
-    headers: { 'Authorization': `Bearer ${accessToken}` },
-    params
-  });
-  const candles = res.data.candles || [];
+  const result = await schwabFetch(`${MARKET_DATA_URL}/pricehistory`, { params });
+  if (!result.ok) throw schwabResultToError(result);
+  const candles = result.data.candles || [];
   return candles.map(c => ({
     ...c,
     datetime: c.datetime < 1e12 ? c.datetime * 1000 : c.datetime
@@ -317,33 +494,42 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
   return candles;
 }
 
-async function getVwapCandles(symbol, cfg = getVwapConfig()) {
-  const endDate = Date.now();
-  const fetch5m = startMs =>
-    getPriceHistory(symbol, 'day', 2, 'minute', 5, {
-      startDate: startMs,
-      endDate,
-      needExtendedHoursData: true
-    });
-
-  let candles = sortCandles(await fetch5m(cfg.vwapStartMs)).filter(cfg.filterCandle);
-
-  if (!candles.length || candles[0].datetime > cfg.vwapStartMs + 30 * 60 * 1000) {
-    const wide = sortCandles(await fetch5m(endDate - 5 * 24 * 60 * 60 * 1000)).filter(cfg.filterCandle);
-    if (wide.length > candles.length) candles = wide;
-  }
-
+function buildVwapPackFrom1m(candles1m, cfg) {
+  const candles = sortCandles(candles1m).filter(
+    c => c.datetime >= cfg.vwapStartMs && cfg.filterCandle(c)
+  );
   const partialEth = isVwapPartialEth(candles, cfg.vwapStartMs);
-
   return {
     candles,
     tag:        formatVwapTag(cfg.tag, partialEth),
     session:    cfg.session,
-    barSize:    '5m',
-    bucketMs:   5 * 60 * 1000,
+    barSize:    '1m',
+    bucketMs:   60 * 1000,
     partialEth,
     firstBarMs: candles[0]?.datetime ?? null
   };
+}
+
+function resolveVwapPackFrom1m(candles1m, pmCfg) {
+  let vwapPack = buildVwapPackFrom1m(candles1m, pmCfg);
+  let vwapAnchor = 'PM';
+  if (isVwapPartialEth(vwapPack.candles, pmCfg.vwapStartMs)) {
+    const today = getEtDateString();
+    const rthStart = utcFromEtDateTime(today, 9, 30);
+    const { capEndMs } = getEthDayBounds();
+    vwapPack = buildVwapPackFrom1m(candles1m, {
+      session: getMarketSession(),
+      tag: 'RTH',
+      needExtendedHours: true,
+      vwapStartMs: rthStart,
+      filterCandle: c =>
+        getEtDateString(c.datetime) === today &&
+        c.datetime >= rthStart &&
+        c.datetime <= capEndMs
+    });
+    vwapAnchor = 'RTH';
+  }
+  return { vwapPack, vwapAnchor };
 }
 
 async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
@@ -351,7 +537,7 @@ async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
   return { candles, session: cfg.session };
 }
 
-// 1-min candles: 2 days extended hours — used for MACD, volume, pullback, candle checks
+// 1-min candles: 2 days extended hours — MACD, warnings, rvol
 async function getSignal1mCandles(symbol) {
   const endDate   = Date.now();
   const startDate = endDate - 2 * 24 * 60 * 60 * 1000;
@@ -393,78 +579,134 @@ function shouldPatchQuote(candles, quote, bucketMs = 60 * 1000) {
 
 // ── SIGNAL CALCULATIONS ───────────────────────────────────────
 
-function formatMacdValue(value) {
-  if (!Number.isFinite(value)) return 'n/a';
-  if (value === 0) return '+0';
-  const sign = value >= 0 ? '+' : '-';
-  const abs  = Math.abs(value);
-  if (abs >= 100) return sign + String(parseFloat(abs.toFixed(1)));
-  const decimals = Math.min(7, Math.max(2, 3 - Math.floor(Math.log10(abs))));
-  return sign + String(parseFloat(abs.toFixed(decimals)));
+function round2(n) {
+  return Math.round(n * 100) / 100;
 }
 
-function macdHistogramPct(histogram, price) {
-  if (!Number.isFinite(histogram) || !Number.isFinite(price) || price <= 0) return null;
-  return (histogram / price) * 100;
-}
-
-function buildMacdHistogramSeries(macdValues) {
-  if (macdValues.length < 9) return [];
-  const k = 2 / 10;
-  let signal = calcEMAFromValues(macdValues.slice(0, 9), 9);
-  const series = [macdValues[8] - signal];
-  for (let i = 9; i < macdValues.length; i++) {
-    signal = macdValues[i] * k + signal * (1 - k);
-    series.push(macdValues[i] - signal);
+function lastFinite(arr) {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (Number.isFinite(arr[i])) return arr[i];
   }
-  return series;
+  return null;
 }
 
-function macdHistogramStrength(histogram, history, lookback = 390) {
-  if (!Number.isFinite(histogram) || !history?.length) return null;
-  const window = history.slice(-lookback);
-  const peak   = Math.max(...window.map(h => Math.abs(h)), 1e-12);
-  return (histogram / peak) * 100;
-}
-
-function macdStrengthTier(strength) {
-  if (strength === null || !Number.isFinite(strength)) return null;
-  const a = Math.abs(strength);
-  if (a >= 75) return 'STRONG';
-  if (a >= 40) return 'MID';
-  return 'WEAK';
-}
-
-function formatMacdStrength(strength) {
-  if (strength === null || !Number.isFinite(strength)) return 'n/a';
-  return (strength >= 0 ? '+' : '') + Math.round(strength) + '%';
-}
-
-function formatMacdHistDetail(histogram, strength, tier) {
-  if (!Number.isFinite(histogram)) return 'insufficient data';
-  if (!Number.isFinite(strength) || !tier) {
-    return histogram < 0 ? 'HIST ↓ weak' : 'HIST ↑ weak';
+function formatTimeEtIso(now = Date.now()) {
+  const d = new Date(now);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: NY_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+    timeZoneName: 'longOffset'
+  }).formatToParts(d);
+  const get = t => parts.find(p => p.type === t)?.value;
+  const tzName = parts.find(p => p.type === 'timeZoneName')?.value || '';
+  const offMatch = tzName.match(/([+-])(\d{1,2})(?::(\d{2}))?/);
+  let offset = '-05:00';
+  if (offMatch) {
+    const sign = offMatch[1];
+    const hh = String(offMatch[2]).padStart(2, '0');
+    const mm = offMatch[3] || '00';
+    offset = `${sign}${hh}:${mm}`;
   }
-  const arrow = histogram < 0 ? '↓' : '↑';
-  return `HIST ${arrow}${Math.round(Math.abs(strength))}% ${tier}`;
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}${offset}`;
 }
 
-function calcEMA(candles, period) {
-  if (!candles.length) return null;
-  const closes = candles.map(c => c.close);
-  if (closes.some(v => !Number.isFinite(v))) return null;
-  return calcEMAFromValues(closes, period);
+function contextMarketSession(now = Date.now()) {
+  const s = getMarketSession(now);
+  if (s === 'POST') return 'AH';
+  return s;
 }
 
-function calcEMAFromValues(values, period) {
-  if (!values.length) return null;
-  if (values.some(v => !Number.isFinite(v))) return null;
+// TOS-exact EMA: SMA seed at index (period - 1), then standard EMA recursion.
+function calcEMASMASeed(values, period) {
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (n < period) return out;
+  if (values.some(v => !Number.isFinite(v))) return out;
+
   const k = 2 / (period + 1);
-  let ema = values[0];
-  for (let i = 1; i < values.length; i++) {
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += values[i];
+  let ema = sum / period;
+  out[period - 1] = ema;
+
+  for (let i = period; i < n; i++) {
     ema = values[i] * k + ema * (1 - k);
+    out[i] = ema;
   }
-  return ema;
+  return out;
+}
+
+// TOS MACD (12, 26, 9, EXPONENTIAL) on a close array; null until valid (35 bars for histogram).
+function calcMACDExactTOS(closes) {
+  const n = closes.length;
+  const macdLine   = Array(n).fill(null);
+  const signalLine = Array(n).fill(null);
+  const histogram  = Array(n).fill(null);
+
+  if (!n || closes.some(v => !Number.isFinite(v))) {
+    return { macdLine, signalLine, histogram };
+  }
+
+  const ema12 = calcEMASMASeed(closes, 12);
+  const ema26 = calcEMASMASeed(closes, 26);
+
+  for (let i = 0; i < n; i++) {
+    if (ema12[i] !== null && ema26[i] !== null) {
+      macdLine[i] = ema12[i] - ema26[i];
+    }
+  }
+
+  const macdSeq    = [];
+  const macdIndices = [];
+  for (let i = 0; i < n; i++) {
+    if (macdLine[i] !== null) {
+      macdSeq.push(macdLine[i]);
+      macdIndices.push(i);
+    }
+  }
+
+  const signalEma = calcEMASMASeed(macdSeq, 9);
+  for (let j = 0; j < macdSeq.length; j++) {
+    if (signalEma[j] !== null) {
+      const i = macdIndices[j];
+      signalLine[i] = signalEma[j];
+      histogram[i]  = macdLine[i] - signalEma[j];
+    }
+  }
+
+  return { macdLine, signalLine, histogram };
+}
+
+function getCompleted1mBars(candles) {
+  if (!candles?.length) return [];
+  const sorted = candles.length > 1 && candles[0].datetime
+    ? [...candles].sort((a, b) => a.datetime - b.datetime)
+    : [...candles];
+  const bucketMs   = 60 * 1000;
+  const nowBucket  = Math.floor(Date.now() / bucketMs) * bucketMs;
+  const last       = sorted[sorted.length - 1];
+  const lastBucket = Math.floor(last.datetime / bucketMs) * bucketMs;
+  if (lastBucket >= nowBucket) return sorted.slice(0, -1);
+  return sorted;
+}
+
+function getCompleted5mBars(candles) {
+  if (!candles?.length) return [];
+  const sorted = candles.length > 1 && candles[0].datetime
+    ? [...candles].sort((a, b) => a.datetime - b.datetime)
+    : [...candles];
+  const bucketMs   = 5 * 60 * 1000;
+  const nowBucket  = Math.floor(Date.now() / bucketMs) * bucketMs;
+  const last       = sorted[sorted.length - 1];
+  const lastBucket = Math.floor(last.datetime / bucketMs) * bucketMs;
+  if (lastBucket >= nowBucket) return sorted.slice(0, -1);
+  return sorted;
 }
 
 function calcVWAP(candles) {
@@ -480,262 +722,331 @@ function calcVWAP(candles) {
   return cumVol > 0 ? cumTPV / cumVol : null;
 }
 
-function calcEMASlope(candles, period) {
-  if (candles.length < 2) return false;
-  const emaNow  = calcEMA(candles, period);
-  const emaPrev = calcEMA(candles.slice(0, -1), period);
-  if (!Number.isFinite(emaNow) || !Number.isFinite(emaPrev)) return false;
-  return emaNow > emaPrev;
-}
+function computeWarnings(candles1m, completed1m) {
+  const warnings = [];
+  if (candles1m.length < 4) return warnings;
 
-function calcMACD(candles, symbol) {
-  if (candles.length < 9) return null;
-  const sorted = candles.length > 1 && candles[0].datetime
-    ? [...candles].sort((a, b) => a.datetime - b.datetime)
-    : candles;
-  const closes = sorted.map(c => c.close);
-  if (closes.some(v => !Number.isFinite(v))) return null;
-
-  const k12 = 2 / 13;
-  const k26 = 2 / 27;
-  let ema12 = closes[0];
-  let ema26 = closes[0];
-  const macdValues = [ema12 - ema26];
-
-  for (let i = 1; i < closes.length; i++) {
-    ema12 = closes[i] * k12 + ema12 * (1 - k12);
-    ema26 = closes[i] * k26 + ema26 * (1 - k26);
-    macdValues.push(ema12 - ema26);
+  const bar = candles1m[candles1m.length - 2];
+  const range = bar.high - bar.low;
+  if (range > 0) {
+    const upperWick = bar.high - Math.max(bar.open, bar.close);
+    if (upperWick / range > 0.6) warnings.push('topping_tail');
+    const body = Math.abs(bar.close - bar.open);
+    if (body / range < 0.1) warnings.push('doji');
   }
 
-  if (macdValues.length < 9) return null;
-
-  const macdLine       = macdValues[macdValues.length - 1];
-  const signal         = calcEMAFromValues(macdValues, 9);
-  if (signal === null) return null;
-
-  const histogram      = macdLine - signal;
-  const histogramSeries = buildMacdHistogramSeries(macdValues);
-  const strength       = macdHistogramStrength(histogram, histogramSeries);
-  const tier           = macdStrengthTier(strength);
-
-  const tag     = symbol ? `${symbol} ` : '';
-  const lastBar = sorted[sorted.length - 1];
-  const lastTs  = lastBar?.datetime ? new Date(lastBar.datetime).toISOString() : 'n/a';
-  console.log(
-    `${tag}MACD (${sorted.length} bars, last ${lastTs} close=${lastBar?.close}) ` +
-    `hist=${formatMacdValue(histogram)} ${tier} ${formatMacdStrength(strength)} of recent peak`
-  );
-
-  return { line: macdLine, signal, histogram, strength, strengthTier: tier, histogramSeries };
-}
-
-// ── 1-MIN SIGNAL CHECKS ───────────────────────────────────────
-
-// Volume dried up: prev completed 1m bar < 50% of prior 10-bar average
-function checkVolumeDry(candles, lookback = 10, threshold = 0.5) {
-  if (candles.length < lookback + 2) return false;
-  const recent     = candles.slice(-lookback - 2, -2);
-  const avg        = recent.reduce((s, c) => s + c.volume, 0) / recent.length;
-  const prevCandle = candles[candles.length - 2];
-  return prevCandle.volume < avg * threshold;
-}
-
-// Volume surge: current 1m bar > 150% of prior 10-bar average
-function checkVolumeSurge(candles, lookback = 10, threshold = 1.5) {
-  if (candles.length < lookback + 1) return false;
-  const recent  = candles.slice(-lookback - 1, -1);
-  const avg     = recent.reduce((s, c) => s + c.volume, 0) / recent.length;
-  const current = candles[candles.length - 1];
-  return current.volume > avg * threshold;
-}
-
-// Topping tail on most recent 1m bar
-function checkToppingTail(candles) {
-  const c     = candles[candles.length - 1];
-  const range = c.high - c.low;
-  if (range === 0) return false;
-  return (c.high - c.close) / range > 0.6;
-}
-
-// Last completed 1m close vs low of the bar before it
-function getCandleUnderSnapshot(candles) {
-  if (candles.length < 3) return null;
-  const closed = candles[candles.length - 2];
-  const prior  = candles[candles.length - 3];
-  const met    = closed.close < prior.low;
-  const c      = closed.close.toFixed(2);
-  const l      = prior.low.toFixed(2);
-  return { met, detail: met ? `C $${c} < $${l} L` : `C $${c} ≥ $${l} L` };
-}
-
-function checkCandleUnderCandle(candles) {
-  const snap = getCandleUnderSnapshot(candles);
-  return snap ? snap.met : false;
-}
-
-// Pullback ≤ 50% of prior move on 1-min — 30-candle lookback (30 minutes of history)
-function checkPullback(candles) {
-  if (candles.length < 5) return { valid: false, pct: null };
-  const recent = candles.slice(-30);  // 30 min of 1-min bars
-
-  // Find highest high in the window (pole top)
-  let poleHighIdx = 0;
-  for (let i = 1; i < recent.length; i++) {
-    if (recent[i].high > recent[poleHighIdx].high) poleHighIdx = i;
-  }
-
-  // Need candles before AND after the high to measure pole + pullback
-  if (poleHighIdx === 0 || poleHighIdx === recent.length - 1) {
-    return { valid: false, pct: null, atPeak: poleHighIdx === recent.length - 1 };
-  }
-
-  const beforePole = recent.slice(0, poleHighIdx);
-  const poleBottom = Math.min(...beforePole.map(c => c.low));
-  const poleTop    = recent[poleHighIdx].high;
-  const poleSize   = poleTop - poleBottom;
-  if (poleSize <= 0) return { valid: false, pct: null };
-
-  const afterPole   = recent.slice(poleHighIdx + 1);
-  const pullbackLow = Math.min(...afterPole.map(c => c.low));
-  const pullbackPct = ((poleTop - pullbackLow) / poleSize) * 100;
-
-  return { valid: pullbackPct <= 50, pct: pullbackPct, atPeak: false };
-}
-
-// VWAP break during consolidation — checked on 1-min bars
-function checkVWAPBreakDuringConsolidation(candles, vwap) {
-  if (candles.length < 6) return false;
-  const window   = candles.slice(-6, -1);
-  const avgClose = window.reduce((s, c) => s + c.close, 0) / window.length;
-  const maxHigh  = Math.max(...window.map(c => c.high));
-  const minLow   = Math.min(...window.map(c => c.low));
-  if ((maxHigh - minLow) / avgClose >= 0.03) return false;
-  return window.some(c => c.close < vwap);
-}
-
-async function buildSignals(symbol) {
-  const sessionCfg = getSessionConfig();
-  const [quote, pack5m, candles1mRaw, vwapPack] = await Promise.all([
-    getQuote(symbol),
-    getSignal5mCandles(symbol, sessionCfg),
-    getSignal1mCandles(symbol),          // single fetch for both MACD and entry checks
-    getVwapCandles(symbol)
-  ]);
-
-  const candles5m   = pack5m.candles;
-  let   candlesVwap = vwapPack.candles;
-  const vwapTag     = vwapPack.tag;
-  const marketSession = vwapPack.session;
-
-  const min5mBars = marketSession === 'PRE' ? 9 : 24;
-  if (!quote || candles5m.length < min5mBars) return null;
-
-  // Patch live quote into 1-min feed (current forming bar)
-  const candles1m = shouldPatchQuote(candles1mRaw, quote)
-    ? applyLiveQuoteToCandles(candles1mRaw, quote, 60 * 1000)
-    : candles1mRaw;
-
-  // Patch live quote into VWAP feed
-  const vwapBucketMs = vwapPack.bucketMs;
-  if (shouldPatchQuote(candlesVwap, quote, vwapBucketMs)) {
-    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapBucketMs);
-  }
-
-  const price      = quote.lastPrice;
-  const prevClose  = quote.closePrice;
-  const dayGainPct = ((price - prevClose) / prevClose) * 100;
-
-  // ── 5-MIN: trend indicators ──────────────────────────────────
-  const vwap        = calcVWAP(candlesVwap);
-  const ema9        = calcEMA(candles5m, 9);
-  const ema9Sloping = calcEMASlope(candles5m, 9);
-
-  if (vwap !== null && candlesVwap.length) {
-    const vFirst = candlesVwap[0];
-    const vLast  = candlesVwap[candlesVwap.length - 1];
-    console.log(
-      `${symbol} [${marketSession}] VWAP $${vwap.toFixed(2)} (${vwapTag}, ${candlesVwap.length} ${vwapPack.barSize}, ` +
-      `${formatEtHm(vFirst.datetime)}–${formatEtHm(vLast.datetime)} ET)`
-    );
-    if (vwapPack.partialEth) {
-      console.warn(
-        `${symbol} VWAP: anchored 4:00 AM ET but Schwab feed starts ${formatEtHm(vFirst.datetime)} — ` +
-        `early ETH missing; TOS will differ`
-      );
+  const last3 = candles1m.slice(-4, -1);
+  if (last3.length === 3) {
+    const bullishAll = last3.every(c => c.close > c.open);
+    const bodies = last3.map(c => Math.abs(c.close - c.open));
+    const heights = last3.map(c => c.high - c.low);
+    const bodiesShrinking   = bodies[0] > bodies[1] && bodies[1] > bodies[2];
+    const heightsShrinking  = heights[0] > heights[1] && heights[1] > heights[2];
+    if (bullishAll && (bodiesShrinking || heightsShrinking)) {
+      warnings.push('momentum_exhaustion');
     }
   }
 
-  // ── 1-MIN: entry timing indicators ───────────────────────────
-  const macd        = calcMACD(candles1m, symbol);
-  const volDry      = checkVolumeDry(candles1m);
-  const volSurge    = checkVolumeSurge(candles1m);
-  const toppingTail = checkToppingTail(candles1m);
-  const candleUnder = checkCandleUnderCandle(candles1m);
-  const pullback    = checkPullback(candles1m);
-  const vwapBreak   = checkVWAPBreakDuringConsolidation(candles1m, vwap);
+  const prior10 = candles1m.slice(-12, -2);
+  if (prior10.length >= 10) {
+    const prior10Avg = prior10.reduce((s, c) => s + c.volume, 0) / prior10.length;
+    if (bar.volume < prior10Avg * 0.5) warnings.push('tape_slowdown');
+  }
 
-  // Pullback detail — distinguish "at peak" from "no structure found"
-  const pullbackDetail = pullback.pct !== null
-    ? `${pullback.pct.toFixed(0)}% retraced`
-    : pullback.atPeak
-      ? 'at peak — no pullback yet'
-      : 'no structure found';
+  const ema20arr = calcEMASMASeed(completed1m.map(c => c.close), 20);
+  const ema20_1m = lastFinite(ema20arr);
+  if (Number.isFinite(ema20_1m) && bar.close < ema20_1m) {
+    warnings.push('lost_20_ema');
+  }
 
-  // MACD histogram
-  const histValue        = macd?.histogram ?? null;
-  const histStrength     = macd?.strength ?? null;
-  const histStrengthTier = macd?.strengthTier ?? null;
-  const histNeg          = histValue !== null ? histValue < 0 : false;
-  const histDetail       = formatMacdHistDetail(histValue, histStrength, histStrengthTier);
+  return warnings;
+}
 
-  // Candle under candle detail
-  const candleUnderSnap   = getCandleUnderSnapshot(candles1m);
-  const candleUnderDetail = candleUnderSnap?.detail ?? 'need 3+ 1m bars';
+function trafficLightRaw(countGreen) {
+  if (countGreen === 4) return 'IN_PLAY';
+  if (countGreen >= 2) return 'CAUTION';
+  return 'BACK_SIDE';
+}
+
+function updateTrafficLightConfirmed(symbol, raw) {
+  let entry = stateCache[symbol];
+  if (!entry || entry.confirmed == null) {
+    stateCache[symbol] = { confirmed: raw, pending: null, pending_count: 0 };
+    return raw;
+  }
+
+  const { confirmed } = entry;
+  if (raw === confirmed) {
+    entry.pending = null;
+    entry.pending_count = 0;
+    return confirmed;
+  }
+
+  if (raw === entry.pending) {
+    entry.pending_count += 1;
+    if (entry.pending_count >= 2) {
+      entry.confirmed = entry.pending;
+      entry.pending = null;
+      entry.pending_count = 0;
+      return entry.confirmed;
+    }
+    return confirmed;
+  }
+
+  entry.pending = raw;
+  entry.pending_count = 1;
+  return confirmed;
+}
+
+function computeStateFromCache(symbol) {
+  const cache = marketDataCache[symbol];
+  if (!cache) {
+    return { status: 'insufficient_data', missing: ['initializing'] };
+  }
+
+  const { quote, pack5m, candles1m: candles1mRaw } = cache;
+  if (!quote || !pack5m || !candles1mRaw) {
+    const missing = [];
+    if (!quote) missing.push('quote');
+    if (!pack5m?.candles?.length) missing.push('5m_candles');
+    if (!candles1mRaw?.length) missing.push('1m_candles');
+    return { status: 'insufficient_data', missing };
+  }
+
+  const pmCfg = getVwapConfig();
+  const { vwapPack, vwapAnchor } = resolveVwapPackFrom1m(candles1mRaw, pmCfg);
+
+  const missing = [];
+  if (!quote?.lastPrice || !Number.isFinite(quote.lastPrice) ||
+      !quote?.closePrice || !Number.isFinite(quote.closePrice)) {
+    missing.push('quote');
+  }
+
+  const candles5m = sortCandles(pack5m.candles);
+  const candles1m = sortCandles(candles1mRaw);
+  if (candles5m.length < 25) missing.push('5m_candles');
+  if (candles1m.length < 35) missing.push('1m_candles');
+
+  let candlesVwap = sortCandles(vwapPack.candles);
+  if (quote && shouldPatchQuote(candlesVwap, quote, vwapPack.bucketMs)) {
+    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapPack.bucketMs);
+  }
+  const hasVwapVol = candlesVwap.some(c => Number.isFinite(c.volume) && c.volume > 0);
+  if (!hasVwapVol) missing.push('vwap_candles');
+
+  if (missing.length) {
+    return { status: 'insufficient_data', missing };
+  }
+
+  const price = quote.lastPrice;
+  const prevClose = quote.closePrice;
+  const vwap = calcVWAP(candlesVwap);
+
+  const completed5m = getCompleted5mBars(candles5m);
+  const closes5m = completed5m.map(c => c.close);
+  const ema9_5m_value = lastFinite(calcEMASMASeed(closes5m, 9));
+  const ema20_5m_value = lastFinite(calcEMASMASeed(closes5m, 20));
+  const front_side_emas = Number.isFinite(ema9_5m_value) && Number.isFinite(ema20_5m_value) &&
+    ema9_5m_value > ema20_5m_value;
+
+  const completed1m = getCompleted1mBars(candles1m);
+  const closes1m = completed1m.map(c => c.close);
+  const { histogram } = calcMACDExactTOS(closes1m);
+  const macd_histogram_value = lastFinite(histogram);
+  if (!Number.isFinite(macd_histogram_value)) {
+    return { status: 'insufficient_data', missing: ['1m_candles'] };
+  }
+  const front_side_macd = macd_histogram_value > 0;
+  const front_side_vwap = vwap != null && price > vwap;
+
+  const forming5m = candles5m[candles5m.length - 1];
+  const recent4 = completed5m.slice(-4);
+  const recent4High = recent4.length
+    ? Math.max(...recent4.map(c => c.high))
+    : -Infinity;
+  const front_side_hh = recent4.length >= 4 && forming5m.high > recent4High;
+
+  const front_side = {
+    emas: front_side_emas,
+    macd: front_side_macd,
+    vwap: front_side_vwap,
+    hh: front_side_hh
+  };
+  const countGreen = Object.values(front_side).filter(Boolean).length;
+  const warnings = computeWarnings(candles1m, completed1m);
+
+  const prior10Vol = candles1m.slice(-12, -2);
+  const prior10AvgVol = prior10Vol.length
+    ? prior10Vol.reduce((s, c) => s + c.volume, 0) / prior10Vol.length
+    : 1;
+  const currentVol = candles1m[candles1m.length - 1].volume;
+  const rvol_1m = prior10AvgVol > 0 ? currentVol / prior10AvgVol : 0;
+
+  const now = Date.now();
+  const vwapDeltaDollars = vwap != null ? price - vwap : 0;
+  const vwapDeltaPct = vwap != null && vwap > 0 ? ((price - vwap) / vwap) * 100 : 0;
 
   return {
+    status: 'ok',
     symbol,
-    price,
-    marketSession,
-    vwapPartialEth: vwapPack.partialEth,
-    buy: {
-      up10pct:   { label: 'Stock up 10%+ on day?',       value: dayGainPct >= 10,             detail: `${dayGainPct.toFixed(1)}%` },
-      aboveVWAP: { label: 'Price above VWAP?',            value: vwap != null && price > vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
-      ema9Up:    { label: '9 EMA sloping up (5-min)?',   value: ema9Sloping,                  detail: `EMA ${formatUsd(ema9)}` },
-      volDry:    { label: 'Volume dried up? (1-min)',     value: volDry,                       detail: 'prev < 50% avg' },
-      volSurge:  { label: 'Volume surge on candle? (1-min)', value: volSurge,                 detail: 'cur > 150% avg' },
-      pullback:  { label: 'Pullback ≤ 50% of move? (1-min)', value: pullback.valid,           detail: pullbackDetail },
-    },
-    sell: {
-      belowVWAP:  { label: 'Price below VWAP?',              value: vwap != null && price < vwap, detail: `VWAP ${formatUsd(vwap)} (${vwapTag})` },
-      belowEMA9:  { label: 'Price below 9 EMA?',             value: ema9 != null && price < ema9, detail: `EMA ${formatUsd(ema9)}` },
-      macdNeg:    { label: 'MACD histogram negative?',        value: histNeg,                      detail: histDetail },
-      candleUnder:{ label: 'Close below prior low? (1-min)',  value: candleUnder,                  detail: candleUnderDetail },
-      toppingTail:{ label: 'Topping tail detected? (1-min)',  value: toppingTail,                  detail: 'wick > 60% range' },
-      vwapBreak:  { label: 'VWAP break in consolidation?',    value: vwapBreak,                    detail: 'cross below VWAP' },
+    traffic_light_raw: trafficLightRaw(countGreen),
+    front_side,
+    warnings,
+    context: {
+      price: round2(price),
+      day_change_pct: round2(((price - prevClose) / prevClose) * 100),
+      vwap_delta_dollars: round2(vwapDeltaDollars),
+      vwap_delta_pct: round2(vwapDeltaPct),
+      vwap_anchor: vwapAnchor,
+      ema9_5m_value: round2(ema9_5m_value),
+      ema20_5m_value: round2(ema20_5m_value),
+      macd_histogram_value: round2(macd_histogram_value),
+      rvol_1m: round2(rvol_1m),
+      time_et: formatTimeEtIso(now),
+      market_session: contextMarketSession(now)
     }
   };
 }
 
-// ── API ENDPOINTS ─────────────────────────────────────────────
-app.get('/api/signals/:symbol', async (req, res) => {
-  try {
-    const signals = await buildSignals(req.params.symbol.toUpperCase());
-    if (!signals) return res.status(503).json({ error: 'Insufficient data' });
-    res.json(signals);
-  } catch (err) {
-    if (err.response?.status === 429) {
-      console.error('⚠️ Rate limited by Schwab — backing off');
-      return res.status(429).json({ error: 'rate_limited' });
+function cacheRefreshError(symbol, err) {
+  if (err instanceof SchwabError) {
+    if (err.code === 'auth_failed') {
+      responseCache[symbol] = { status: 'auth_failed' };
+      return;
     }
-    console.error('Signal error:', err.message);
-    res.status(500).json({ error: err.message });
+    if (err.code === 'rate_limited') {
+      responseCache[symbol] = { status: 'rate_limited' };
+      return;
+    }
   }
+  console.error(`Refresh error (${symbol}):`, err.message);
+}
+
+function recomputeAndCacheState(symbol) {
+  if (symbol !== activeSymbol) return;
+  try {
+    const state = computeStateFromCache(symbol);
+    if (state.status === 'insufficient_data') {
+      responseCache[symbol] = state;
+      return;
+    }
+    if (state.status === 'ok') {
+      const confirmed = updateTrafficLightConfirmed(symbol, state.traffic_light_raw);
+      responseCache[symbol] = { ...state, traffic_light_confirmed: confirmed };
+    }
+  } catch (err) {
+    cacheRefreshError(symbol, err);
+  }
+}
+
+async function refreshQuote(symbol) {
+  if (symbol !== activeSymbol) return;
+  if (refreshInFlight.quote) return;
+  refreshInFlight.quote = true;
+  try {
+    if (!authenticated) return;
+    const quote = await getQuote(symbol);
+    if (symbol !== activeSymbol) return;
+    if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
+    marketDataCache[symbol].quote = quote;
+    recomputeAndCacheState(symbol);
+  } catch (err) {
+    cacheRefreshError(symbol, err);
+  } finally {
+    refreshInFlight.quote = false;
+  }
+}
+
+async function refreshCandles(symbol) {
+  if (symbol !== activeSymbol) return;
+  if (refreshInFlight.candles) return;
+  refreshInFlight.candles = true;
+  try {
+    if (!authenticated) return;
+    const sessionCfg = getSessionConfig();
+    const [pack5m, candles1m] = await Promise.all([
+      getSignal5mCandles(symbol, sessionCfg),
+      getSignal1mCandles(symbol)
+    ]);
+    if (symbol !== activeSymbol) return;
+    if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
+    marketDataCache[symbol].pack5m = pack5m;
+    marketDataCache[symbol].candles1m = candles1m;
+    recomputeAndCacheState(symbol);
+  } catch (err) {
+    cacheRefreshError(symbol, err);
+  } finally {
+    refreshInFlight.candles = false;
+  }
+}
+
+function stopSymbolRefresh() {
+  if (refreshTimers.quote) {
+    clearInterval(refreshTimers.quote);
+    refreshTimers.quote = null;
+  }
+  if (refreshTimers.candles) {
+    clearInterval(refreshTimers.candles);
+    refreshTimers.candles = null;
+  }
+  refreshInFlight.quote = false;
+  refreshInFlight.candles = false;
+}
+
+function startSymbolRefresh(symbol) {
+  stopSymbolRefresh();
+  refreshQuote(symbol);
+  refreshCandles(symbol);
+  refreshTimers.quote = setInterval(() => refreshQuote(symbol), QUOTE_POLL_MS);
+  refreshTimers.candles = setInterval(() => refreshCandles(symbol), CANDLE_POLL_MS);
+}
+
+function setActiveSymbol(symbol) {
+  if (activeSymbol === symbol) return;
+  stopSymbolRefresh();
+  activeSymbol = symbol;
+  if (symbol) startSymbolRefresh(symbol);
+}
+
+// ── API ENDPOINTS ─────────────────────────────────────────────
+function stateHandler(req, res) {
+  const sym = req.params.symbol.toUpperCase();
+  setActiveSymbol(sym);
+
+  if (!authenticated) {
+    return res.json({ status: 'auth_failed' });
+  }
+
+  const cached = responseCache[sym];
+  if (cached) {
+    if (cached.status === 'insufficient_data') {
+      return res.status(503).json(cached);
+    }
+    if (cached.status === 'rate_limited') {
+      return res.status(429).json(cached);
+    }
+    if (cached.status === 'auth_failed') {
+      return res.json(cached);
+    }
+    return res.json(cached);
+  }
+
+  return res.status(503).json({ status: 'insufficient_data', missing: ['initializing'] });
+}
+
+app.get('/api/state/:symbol', stateHandler);
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    authenticated,
+    last_successful_fetch: lastSuccessfulFetch,
+    rate_limit_status: rateLimitStatus
+  });
 });
 
 app.get('/api/status', (req, res) => {
   res.json({
-    authenticated: !!accessToken,
+    authenticated,
     session:  getMarketSession(),
     open:     isGatekeeperOpen(),
     hoursEt:  '4:00 AM – 8:00 PM'
