@@ -27,8 +27,10 @@
       gap: 20px;
     }
 
-    /* ── Ticker ── */
+    /* ── Ticker (always above overlays so a symbol can be entered) ── */
     #ticker-wrap {
+      position: relative;
+      z-index: 200;
       width: 100%;
       text-align: center;
       padding-top: 8px;
@@ -169,6 +171,11 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .ctx-value.ctx-green { color: #00ff66; }
+    .ctx-value.ctx-red { color: #ff3333; }
+    .ctx-value.ctx-yellow { color: #ffaa00; }
+    .ctx-value.ctx-blue { color: #66aaff; }
+
     /* ── Overlays ── */
     #overlay-layer {
       position: fixed;
@@ -213,7 +220,11 @@
       line-height: 1.5;
     }
 
-    #overlay-waiting { background: rgba(0, 0, 0, 0.85); }
+    #overlay-waiting {
+      background: rgba(0, 0, 0, 0.85);
+      /* Block the panel only — ticker stays interactive via #ticker-wrap z-index */
+      top: 120px;
+    }
     #overlay-stale { background: rgba(255, 170, 0, 0.25); }
     #overlay-disconnected { background: rgba(255, 51, 51, 0.35); }
     #overlay-auth { background: rgba(0, 0, 0, 0.9); }
@@ -251,7 +262,7 @@
   <div id="dots-row">
     <div class="dot-cell">
       <div class="dot" id="dot-emas"></div>
-      <span class="dot-label">9/20 EMA (5m)</span>
+      <span class="dot-label">9/20 EMA (1m)</span>
     </div>
     <div class="dot-cell">
       <div class="dot" id="dot-macd"></div>
@@ -279,8 +290,8 @@
     <div class="ctx-value" id="ctx-vwap-d">—</div>
     <div class="ctx-value" id="ctx-rvol">—</div>
 
-    <div class="ctx-label">9 EMA (5m)</div>
-    <div class="ctx-label">20 EMA (5m)</div>
+    <div class="ctx-label">9 EMA (1m)</div>
+    <div class="ctx-label">20 EMA (1m)</div>
     <div class="ctx-label">MACD HIST</div>
     <div class="ctx-label">SESSION</div>
     <div class="ctx-value" id="ctx-ema9">—</div>
@@ -319,7 +330,7 @@
   const DISCONNECT_MS = 60000;
 
   const CONDITION_LABELS = {
-    emas: '9/20 EMA cross',
+    emas: '9/20 EMA cross (1m)',
     macd: 'MACD histogram',
     vwap: 'Price vs VWAP',
     hh: 'Higher highs'
@@ -396,8 +407,60 @@
 
   function formatMacdHist(n) {
     if (n == null || !Number.isFinite(n)) return '—';
-    const sign = n >= 0 ? '+' : '-';
-    return `${sign}${Math.abs(n).toFixed(4)}`;
+    const sign = n >= 0 ? '+' : '';
+    return sign + String(n);
+  }
+
+  const CTX_COLOR_CLASSES = ['ctx-green', 'ctx-red', 'ctx-yellow', 'ctx-blue'];
+
+  function setCtxColor(el, colorClass) {
+    el.classList.remove(...CTX_COLOR_CLASSES);
+    if (colorClass) el.classList.add(colorClass);
+  }
+
+  function colorPrice(price) {
+    if (!Number.isFinite(price)) return null;
+    if (price >= 2 && price <= 20) return 'ctx-green';
+    if (price >= 1 && price < 2) return 'ctx-yellow';
+    return 'ctx-red';
+  }
+
+  function colorDayChg(pct) {
+    if (!Number.isFinite(pct)) return null;
+    return pct > 10 ? 'ctx-green' : 'ctx-red';
+  }
+
+  function colorMacd(hist) {
+    if (!Number.isFinite(hist)) return null;
+    return hist > 0 ? 'ctx-green' : 'ctx-red';
+  }
+
+  function colorEmas(ema9, ema20) {
+    if (!Number.isFinite(ema9) || !Number.isFinite(ema20)) return null;
+    return ema9 > ema20 ? 'ctx-green' : 'ctx-red';
+  }
+
+  function colorRvol(rvol) {
+    if (!Number.isFinite(rvol)) return null;
+    return rvol >= 5 ? 'ctx-green' : 'ctx-red';
+  }
+
+  function colorVwapDelta(dollars) {
+    if (!Number.isFinite(dollars)) return null;
+    if (dollars > 0) return 'ctx-green';
+    if (dollars < 0) return 'ctx-red';
+    return null;
+  }
+
+  function colorSession(session) {
+    if (!session) return null;
+    switch (session) {
+      case 'RTH': return 'ctx-green';
+      case 'PRE': return 'ctx-yellow';
+      case 'AH': return 'ctx-blue';
+      case 'CLOSED': return 'ctx-red';
+      default: return null;
+    }
   }
 
   function failingConditions(frontSide) {
@@ -462,16 +525,38 @@
   }
 
   function renderContext(ctx) {
-    document.getElementById('ctx-price').textContent = formatMoney(ctx?.price);
-    document.getElementById('ctx-day-chg').textContent = formatSignedPct(ctx?.day_change_pct);
-    document.getElementById('ctx-vwap-d').textContent = formatVwapDelta(
-      ctx?.vwap_delta_dollars, ctx?.vwap_delta_pct
-    );
-    document.getElementById('ctx-rvol').textContent = formatRvol(ctx?.rvol_1m);
-    document.getElementById('ctx-ema9').textContent = formatMoney(ctx?.ema9_5m_value);
-    document.getElementById('ctx-ema20').textContent = formatMoney(ctx?.ema20_5m_value);
-    document.getElementById('ctx-macd').textContent = formatMacdHist(ctx?.macd_histogram_value);
-    document.getElementById('ctx-session').textContent = ctx?.market_session ?? '—';
+    const elPrice = document.getElementById('ctx-price');
+    const elDayChg = document.getElementById('ctx-day-chg');
+    const elVwap = document.getElementById('ctx-vwap-d');
+    const elRvol = document.getElementById('ctx-rvol');
+    const elEma9 = document.getElementById('ctx-ema9');
+    const elEma20 = document.getElementById('ctx-ema20');
+    const elMacd = document.getElementById('ctx-macd');
+    const elSession = document.getElementById('ctx-session');
+
+    elPrice.textContent = formatMoney(ctx?.price);
+    setCtxColor(elPrice, colorPrice(ctx?.price));
+
+    elDayChg.textContent = formatSignedPct(ctx?.day_change_pct);
+    setCtxColor(elDayChg, colorDayChg(ctx?.day_change_pct));
+
+    elVwap.textContent = formatVwapDelta(ctx?.vwap_delta_dollars, ctx?.vwap_delta_pct);
+    setCtxColor(elVwap, colorVwapDelta(ctx?.vwap_delta_dollars));
+
+    elRvol.textContent = formatRvol(ctx?.rvol_1m);
+    setCtxColor(elRvol, colorRvol(ctx?.rvol_1m));
+
+    const emaColor = colorEmas(ctx?.ema9_1m_value, ctx?.ema20_1m_value);
+    elEma9.textContent = formatMoney(ctx?.ema9_1m_value);
+    setCtxColor(elEma9, emaColor);
+    elEma20.textContent = formatMoney(ctx?.ema20_1m_value);
+    setCtxColor(elEma20, emaColor);
+
+    elMacd.textContent = formatMacdHist(ctx?.macd_histogram_value);
+    setCtxColor(elMacd, colorMacd(ctx?.macd_histogram_value));
+
+    elSession.textContent = ctx?.market_session ?? '—';
+    setCtxColor(elSession, colorSession(ctx?.market_session));
   }
 
   function clearContext() {
@@ -479,7 +564,9 @@
       'ctx-price', 'ctx-day-chg', 'ctx-vwap-d', 'ctx-rvol',
       'ctx-ema9', 'ctx-ema20', 'ctx-macd', 'ctx-session'
     ]) {
-      document.getElementById(id).textContent = '—';
+      const el = document.getElementById(id);
+      el.textContent = '—';
+      setCtxColor(el, null);
     }
   }
 
@@ -576,6 +663,7 @@
   function resolveOverlayId() {
     if (healthData.authenticated === false || stateAuthFailed) return 'auth';
     if (healthData.rate_limit_status === 'backing_off') return 'rate';
+    if (!symbol) return null;
     if (waitingForData || !hasReceivedOk) return 'waiting';
 
     const now = Date.now();
@@ -736,17 +824,16 @@
       symbol = saved;
     }
 
-    overlayEls.waiting.classList.add('overlay-active');
-    activeOverlayId = 'waiting';
-
     pollHealth();
     healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
     overlayTimer = setInterval(updateOverlays, 1000);
 
     if (symbol) {
+      waitingForData = true;
+      updateOverlays();
       startStatePolling();
     } else {
-      waitingForData = true;
+      waitingForData = false;
       updateOverlays();
     }
   }

@@ -199,7 +199,7 @@ async function schwabFetch(url, options = {}) {
     return { ok: false, status: 400, error: 'invalid_schwab_url' };
   }
 
-  if (!authenticated) {
+  if (!authenticated && !(await refreshAccessToken())) {
     return { ok: false, status: 401, error: 'auth_failed' };
   }
 
@@ -336,6 +336,8 @@ function utcFromEtDateTime(dateStr, hour, minute) {
   return hi;
 }
 
+const CLOSED_LOOKBACK_MS = 10 * 24 * 60 * 60 * 1000;
+
 const ETH_OPEN_ET   = 4 * 60;
 const ETH_CLOSE_ET  = 20 * 60;
 const PRE_OPEN_ET   = ETH_OPEN_ET;
@@ -414,7 +416,8 @@ function getSessionConfig(now = Date.now()) {
         session: 'CLOSED',
         tag: 'EOD',
         needExtendedHours: true,
-        vwapStartMs: now - 3 * 24 * 60 * 60 * 1000,
+        // Span weekends/holidays — last trade may be several calendar days ago
+        vwapStartMs: now - CLOSED_LOOKBACK_MS,
         filterCandle: c => inMins(c, RTH_OPEN_ET, POST_CLOSE_ET)
       };
   }
@@ -463,6 +466,12 @@ function sortCandles(candles) {
     : candles;
 }
 
+function getLastCandleEtDate(candles) {
+  if (!candles?.length) return getEtDateString(Date.now());
+  const sorted = sortCandles(candles);
+  return getEtDateString(sorted[sorted.length - 1].datetime);
+}
+
 function filterToMostRecentTradingDay(candles, filterCandle) {
   if (!candles.length) return [];
   const sorted  = sortCandles(candles);
@@ -484,8 +493,9 @@ async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookba
     candles = candles.filter(c => getEtDateString(c.datetime) === lastDay);
   }
   if (candles.length < 10) {
-    const wide = await getPriceHistory(symbol, 'day', 5, frequencyType, frequency, {
-      startDate: endDate - 5 * 24 * 60 * 60 * 1000,
+    const wideDays = cfg.session === 'CLOSED' ? 10 : 5;
+    const wide = await getPriceHistory(symbol, 'day', wideDays, frequencyType, frequency, {
+      startDate: endDate - wideDays * 24 * 60 * 60 * 1000,
       endDate,
       needExtendedHoursData: true
     });
@@ -514,18 +524,19 @@ function resolveVwapPackFrom1m(candles1m, pmCfg) {
   let vwapPack = buildVwapPackFrom1m(candles1m, pmCfg);
   let vwapAnchor = 'PM';
   if (isVwapPartialEth(vwapPack.candles, pmCfg.vwapStartMs)) {
-    const today = getEtDateString();
-    const rthStart = utcFromEtDateTime(today, 9, 30);
-    const { capEndMs } = getEthDayBounds();
+    // Use last bar's session day — not calendar today (empty on holidays/weekends)
+    const refDay = getLastCandleEtDate(candles1m);
+    const rthStart = utcFromEtDateTime(refDay, 9, 30);
+    const refEndMs = utcFromEtDateTime(refDay, 20, 0);
     vwapPack = buildVwapPackFrom1m(candles1m, {
-      session: getMarketSession(),
+      session: pmCfg.session === 'CLOSED' ? 'CLOSED' : getMarketSession(),
       tag: 'RTH',
       needExtendedHours: true,
       vwapStartMs: rthStart,
       filterCandle: c =>
-        getEtDateString(c.datetime) === today &&
+        getEtDateString(c.datetime) === refDay &&
         c.datetime >= rthStart &&
-        c.datetime <= capEndMs
+        c.datetime <= refEndMs
     });
     vwapAnchor = 'RTH';
   }
@@ -533,14 +544,15 @@ function resolveVwapPackFrom1m(candles1m, pmCfg) {
 }
 
 async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
-  const candles = await fetchSessionCandles(symbol, 5, 'minute', cfg, 3);
+  const lookbackDays = cfg.session === 'CLOSED' ? 10 : 3;
+  const candles = await fetchSessionCandles(symbol, 5, 'minute', cfg, lookbackDays);
   return { candles, session: cfg.session };
 }
 
-// 1-min candles: 2 days extended hours — MACD, warnings, rvol
+// 1-min candles: 10 calendar days — must span weekends when session is CLOSED
 async function getSignal1mCandles(symbol) {
   const endDate   = Date.now();
-  const startDate = endDate - 2 * 24 * 60 * 60 * 1000;
+  const startDate = endDate - 10 * 24 * 60 * 60 * 1000;
   return getPriceHistory(symbol, 'day', 10, 'minute', 1, {
     startDate,
     endDate,
@@ -843,14 +855,13 @@ function computeStateFromCache(symbol) {
   const vwap = calcVWAP(candlesVwap);
 
   const completed5m = getCompleted5mBars(candles5m);
-  const closes5m = completed5m.map(c => c.close);
-  const ema9_5m_value = lastFinite(calcEMASMASeed(closes5m, 9));
-  const ema20_5m_value = lastFinite(calcEMASMASeed(closes5m, 20));
-  const front_side_emas = Number.isFinite(ema9_5m_value) && Number.isFinite(ema20_5m_value) &&
-    ema9_5m_value > ema20_5m_value;
-
   const completed1m = getCompleted1mBars(candles1m);
   const closes1m = completed1m.map(c => c.close);
+  const ema9_1m_value = lastFinite(calcEMASMASeed(closes1m, 9));
+  const ema20_1m_value = lastFinite(calcEMASMASeed(closes1m, 20));
+  const front_side_emas = Number.isFinite(ema9_1m_value) && Number.isFinite(ema20_1m_value) &&
+    ema9_1m_value > ema20_1m_value;
+
   const { histogram } = calcMACDExactTOS(closes1m);
   const macd_histogram_value = lastFinite(histogram);
   if (!Number.isFinite(macd_histogram_value)) {
@@ -898,9 +909,9 @@ function computeStateFromCache(symbol) {
       vwap_delta_dollars: round2(vwapDeltaDollars),
       vwap_delta_pct: round2(vwapDeltaPct),
       vwap_anchor: vwapAnchor,
-      ema9_5m_value: round2(ema9_5m_value),
-      ema20_5m_value: round2(ema20_5m_value),
-      macd_histogram_value: round2(macd_histogram_value),
+      ema9_1m_value: round2(ema9_1m_value),
+      ema20_1m_value: round2(ema20_1m_value),
+      macd_histogram_value,
       rvol_1m: round2(rvol_1m),
       time_et: formatTimeEtIso(now),
       market_session: contextMarketSession(now)
@@ -944,7 +955,7 @@ async function refreshQuote(symbol) {
   if (refreshInFlight.quote) return;
   refreshInFlight.quote = true;
   try {
-    if (!authenticated) return;
+    if (!authenticated && !(await refreshAccessToken())) return;
     const quote = await getQuote(symbol);
     if (symbol !== activeSymbol) return;
     if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
@@ -962,7 +973,7 @@ async function refreshCandles(symbol) {
   if (refreshInFlight.candles) return;
   refreshInFlight.candles = true;
   try {
-    if (!authenticated) return;
+    if (!authenticated && !(await refreshAccessToken())) return;
     const sessionCfg = getSessionConfig();
     const [pack5m, candles1m] = await Promise.all([
       getSignal5mCandles(symbol, sessionCfg),
@@ -1009,13 +1020,14 @@ function setActiveSymbol(symbol) {
 }
 
 // ── API ENDPOINTS ─────────────────────────────────────────────
-function stateHandler(req, res) {
+async function stateHandler(req, res) {
   const sym = req.params.symbol.toUpperCase();
-  setActiveSymbol(sym);
 
-  if (!authenticated) {
+  if (!authenticated && !(await refreshAccessToken())) {
     return res.json({ status: 'auth_failed' });
   }
+
+  setActiveSymbol(sym);
 
   const cached = responseCache[sym];
   if (cached) {
@@ -1036,7 +1048,10 @@ function stateHandler(req, res) {
 
 app.get('/api/state/:symbol', stateHandler);
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  if (!authenticated && refreshToken) {
+    await refreshAccessToken();
+  }
   res.json({
     authenticated,
     last_successful_fetch: lastSuccessfulFetch,
@@ -1056,6 +1071,12 @@ app.get('/api/status', (req, res) => {
 app.use(express.static('public'));
 
 // ── START ─────────────────────────────────────────────────────
+if (refreshToken) {
+  refreshAccessToken({ force: true }).catch(err => {
+    console.error('Startup token refresh failed:', err.message);
+  });
+}
+
 const certPath = process.env.CERT_PATH;
 const keyPath  = process.env.KEY_PATH;
 

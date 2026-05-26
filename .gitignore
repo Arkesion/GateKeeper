@@ -1,4 +1,6 @@
 .env
 node_modules/
 tokens.json
-CLAUDE.md
+
+# Documentation — not needed for runtime on corpus (server.js + public/ only)
+*.md

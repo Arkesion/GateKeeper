@@ -1,0 +1,5 @@
+# Dev/docs — not copied into the Gatekeeper container
+*.md
+
+.git
+.gitignore
