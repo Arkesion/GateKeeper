@@ -42,7 +42,9 @@ const MACD_MIN_BARS = 26;
 const MACD_MIN_BARS_SPARSE = 20;
 /** Minimum today's session 1m bars for VWAP / higher-highs (not MACD warmup). */
 const SESSION_MIN_BARS = 4;
-const WARNING_LOOKBACK_BARS = 10;
+/** Timed warnings only surface bars from the last 8 minutes (1m chart). */
+const WARNING_WINDOW_MS = 8 * 60 * 1000;
+const WARNING_LOOKBACK_BARS = 8;
 const TOPPING_TAIL_WICK_RATIO = 0.6;
 const BOTTOMING_TAIL_WICK_RATIO = 0.6;
 const DOJI_BODY_RATIO = 0.1;
@@ -51,7 +53,7 @@ const DOJI_RUN_MIN_SAME_DIR = 3;
 /** High-volume 1m bar vs prior bars (no L2 — tape proxy). */
 const HIGH_VOL_RATIO = 2.0;
 const HIGH_VOL_PRIOR_BARS = 8;
-const HIGH_VOL_LOOKBACK_BARS = 8;
+/** HV sell GO check uses the same 8-minute window as warning messages. */
 const TAPE_SLOW_RATIO = 0.5;
 /** Front-side momentum: higher-highs ladder in ~5 completed 1m bars (not a GO veto). */
 const MOMENTUM_HH_LOOKBACK = 5;
@@ -2086,89 +2088,88 @@ function isHighVolumeBuyBar(bar, completedBars) {
   return isHighVolumeBar(bar, completedBars, 'buy');
 }
 
-function findMostRecentWarningBar(completedBars, predicate, lookback = WARNING_LOOKBACK_BARS) {
-  const window = completedBars.slice(-lookback);
+function barsInWarningWindow(completedBars, now = Date.now()) {
+  const cutoff = now - WARNING_WINDOW_MS;
+  return sortCandles(completedBars).filter(b => b?.datetime >= cutoff);
+}
+
+function findMostRecentWarningBar(completedBars, predicate, now = Date.now()) {
+  const window = barsInWarningWindow(completedBars, now);
   for (let i = window.length - 1; i >= 0; i--) {
     if (predicate(window[i], completedBars)) return window[i];
   }
   return null;
 }
 
-function findAllWarningBarsInLookback(completedBars, predicate, lookback = WARNING_LOOKBACK_BARS) {
-  const window = completedBars.slice(-lookback);
-  return window.filter(bar => predicate(bar, completedBars));
+function findAllWarningBarsInLookback(completedBars, predicate, now = Date.now()) {
+  return barsInWarningWindow(completedBars, now).filter(bar => predicate(bar, completedBars));
 }
 
-function formatWarningBarTimes(barList) {
-  return barList.map(b => formatEtHm(b.datetime)).join(', ');
+function formatWarningBarTimes(barList, now = Date.now()) {
+  const times = barsInWarningWindow(barList, now).map(b => formatEtHm(b.datetime));
+  return times.join(', ');
 }
 
-function hasHighVolSellInLookback(completedBars) {
-  return findMostRecentWarningBar(
-    completedBars, isHighVolumeSellBar, HIGH_VOL_LOOKBACK_BARS
-  ) != null;
+function hasHighVolSellInLookback(completedBars, now = Date.now()) {
+  return findMostRecentWarningBar(completedBars, isHighVolumeSellBar, now) != null;
 }
 
-/** Parabolic-style HH: 3+ ascending highs in last ~5 completed bars (+ forming break). */
-function computeParabolicMomentum(completed1m, forming1m) {
-  const recent = completed1m.slice(-MOMENTUM_HH_LOOKBACK);
+function addTimedWarning(codes, bars, code, barList, now) {
+  const label = formatWarningBarTimes(barList, now);
+  if (!label) return;
+  codes.push(code);
+  bars[code] = label;
+}
+
+/**
+ * Front-side HH (~5×1m): ladder of higher highs on today's ETH 1m series (no gap trim).
+ * Includes the live forming bar so parabolic moves register before the minute closes.
+ */
+function computeParabolicMomentum(candles1m) {
+  const recent = sortCandles(candles1m).slice(-MOMENTUM_HH_LOOKBACK);
   if (recent.length < 3) return false;
+
   let hhSteps = 0;
   for (let i = 1; i < recent.length; i++) {
     if (recent[i].high > recent[i - 1].high) hhSteps++;
   }
+  if (hhSteps >= MOMENTUM_HH_MIN_STEPS) return true;
+
   const last = recent[recent.length - 1];
-  if (forming1m && Number.isFinite(forming1m.high) && last && forming1m.high > last.high) {
-    hhSteps++;
+  const windowMax = Math.max(...recent.map(c => c.high).filter(Number.isFinite));
+  if (!Number.isFinite(last?.high) || last.high < windowMax - 1e-9) return false;
+
+  const tailPairs = Math.min(3, recent.length - 1);
+  let tailHh = 0;
+  for (let i = recent.length - tailPairs; i < recent.length; i++) {
+    if (recent[i].high > recent[i - 1].high) tailHh++;
   }
-  return hhSteps >= MOMENTUM_HH_MIN_STEPS;
+  return tailHh >= 2;
 }
 
-function computeWarnings(candles1m, completed1m) {
+function computeWarnings(candles1m, completed1m, now = Date.now()) {
   const codes = [];
   const bars = {};
   if (candles1m.length < 4) return { codes, bars };
 
   const bar = candles1m[candles1m.length - 2];
 
-  const toppingBars = findAllWarningBarsInLookback(completed1m, isToppingTailBar);
-  if (toppingBars.length) {
-    codes.push('topping_tail');
-    bars.topping_tail = formatWarningBarTimes(toppingBars);
-  }
+  addTimedWarning(codes, bars, 'topping_tail',
+    findAllWarningBarsInLookback(completed1m, isToppingTailBar, now), now);
+  addTimedWarning(codes, bars, 'bottoming_tail',
+    findAllWarningBarsInLookback(completed1m, isBottomingTailBar, now), now);
+  addTimedWarning(codes, bars, 'doji_bull_run',
+    findAllWarningBarsInLookback(completed1m, isDojiOnBullishRunBar, now), now);
+  addTimedWarning(codes, bars, 'doji_bear_run',
+    findAllWarningBarsInLookback(completed1m, isDojiOnBearishRunBar, now), now);
 
-  const bottomingBars = findAllWarningBarsInLookback(completed1m, isBottomingTailBar);
-  if (bottomingBars.length) {
-    codes.push('bottoming_tail');
-    bars.bottoming_tail = formatWarningBarTimes(bottomingBars);
-  }
-
-  const dojiBullRun = findAllWarningBarsInLookback(completed1m, isDojiOnBullishRunBar);
-  if (dojiBullRun.length) {
-    codes.push('doji_bull_run');
-    bars.doji_bull_run = formatWarningBarTimes(dojiBullRun);
-  }
-
-  const dojiBearRun = findAllWarningBarsInLookback(completed1m, isDojiOnBearishRunBar);
-  if (dojiBearRun.length) {
-    codes.push('doji_bear_run');
-    bars.doji_bear_run = formatWarningBarTimes(dojiBearRun);
-  }
-
-  const hvSellBars = findAllWarningBarsInLookback(
-    completed1m, isHighVolumeSellBar, HIGH_VOL_LOOKBACK_BARS
-  );
+  const hvSellBars = findAllWarningBarsInLookback(completed1m, isHighVolumeSellBar, now);
   if (hvSellBars.length) {
-    bars.high_volume_sell = formatWarningBarTimes(hvSellBars);
+    bars.high_volume_sell = formatWarningBarTimes(hvSellBars, now);
   }
 
-  const hvBuyBars = findAllWarningBarsInLookback(
-    completed1m, isHighVolumeBuyBar, HIGH_VOL_LOOKBACK_BARS
-  );
-  if (hvBuyBars.length) {
-    codes.push('high_volume_buy');
-    bars.high_volume_buy = formatWarningBarTimes(hvBuyBars);
-  }
+  addTimedWarning(codes, bars, 'high_volume_buy',
+    findAllWarningBarsInLookback(completed1m, isHighVolumeBuyBar, now), now);
 
   const last3 = candles1m.slice(-4, -1);
   if (last3.length === 3) {
@@ -2518,24 +2519,19 @@ function buildCalcHints({
 
   const momLines = [
     `Front-side momentum (~${MOMENTUM_HH_LOOKBACK}m): parabolic higher-highs ladder.`,
-    `Need ${MOMENTUM_HH_MIN_STEPS}+ steps where each bar high > prior bar high`,
-    '(forming bar can add one step). Not a GO veto — consolidation wicks OK.'
+    `Need ${MOMENTUM_HH_MIN_STEPS}+ HH steps in last ${MOMENTUM_HH_LOOKBACK} bars, or at window high with 2+ recent HH.`,
+    'Uses today ETH 1m (no gap trim). Includes live forming bar. Not a GO veto.'
   ];
-  const recent5 = completed1m.slice(-MOMENTUM_HH_LOOKBACK);
-  if (recent5.length >= 2) {
-    recent5.forEach((c, i) => {
-      const prev = i > 0 ? recent5[i - 1] : null;
+  const momBars = sortCandles(candles1m || []).slice(-MOMENTUM_HH_LOOKBACK);
+  if (momBars.length >= 2) {
+    momBars.forEach((c, i) => {
+      const prev = i > 0 ? momBars[i - 1] : null;
       const step = prev && c.high > prev.high ? 'HH↑' : '—';
       momLines.push(`  ${barLine(c)} ${step}`);
     });
-    if (forming1m) {
-      const ref = recent5[recent5.length - 1];
-      const step = ref && forming1m.high > ref.high ? 'HH↑ forming' : 'forming';
-      momLines.push(`  ${formatEtHm(forming1m.datetime)} H=${forming1m.high.toFixed(2)} (live) ${step}`);
-    }
     momLines.push(`→ ${momentum?.parabolic_hh ? 'GREEN (front side of move)' : 'RED (no parabolic HH lately)'}`);
   } else {
-    momLines.push(`Need ≥3 completed 1m bars (have ${recent5.length}).`);
+    momLines.push(`Need ≥3 1m bars (have ${momBars.length}).`);
   }
 
   return {
@@ -2610,7 +2606,7 @@ function buildCalcHints({
         `→ ${front_side.vwap ? 'GREEN' : 'RED'}`
       ]),
       no_hv_sell: nl([
-        `GO check: no high-volume sell order in last ${HIGH_VOL_LOOKBACK_BARS} completed 1m bars.`,
+        `GO check: no high-volume sell order in last 8 minutes of 1m bars.`,
         `Bearish bar with volume ≥ 2× prior ${HIGH_VOL_PRIOR_BARS}-bar avg = HV sell (see warnings).`,
         `→ ${front_side.no_hv_sell ? 'GREEN' : 'RED (HV sell in window)'}`
       ]),
@@ -2739,7 +2735,7 @@ function computeStateFromCache(symbol) {
     }
   }
 
-  const no_hv_sell = !hasHighVolSellInLookback(completed1m);
+  const no_hv_sell = !hasHighVolSellInLookback(completed1m, now);
   const spread = quoteBidAskSpread(quote);
   const spread_ok = isSpreadAcceptable(quote);
   const front_side = {
@@ -2750,9 +2746,9 @@ function computeStateFromCache(symbol) {
     spread_ok
   };
   const momentum = {
-    parabolic_hh: computeParabolicMomentum(completed1m, forming1m)
+    parabolic_hh: computeParabolicMomentum(indicator1m)
   };
-  const warningResult = computeWarnings(candles1mLive, completedInd);
+  const warningResult = computeWarnings(candles1mLive, completedInd, now);
 
   const rvolResult = calcDailyRvol14(session1m, dailyCandles, now);
   const rvol_daily = rvolResult.rvol;
@@ -2776,7 +2772,7 @@ function computeStateFromCache(symbol) {
   const calc_hints = buildCalcHints({
     price, prevClose, vwap, vwapAnchor, vwapPack,
     ema9_1m_value, ema20_1m_value, macd_histogram_value,
-    completed1m: completedInd, candles1m: session1m, forming1m, recent4, recent4High, momentum,
+    completed1m: completedInd, candles1m: indicator1m, forming1m, recent4, recent4High, momentum,
     rvolDaily: rvol_daily,
     todayVol: rvolResult.todayVol,
     avg14Vol: rvolResult.avg14,

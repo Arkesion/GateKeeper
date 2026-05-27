@@ -4,3 +4,4 @@ tokens.json
 
 # Documentation — not needed for runtime on corpus (server.js + public/ only)
 *.md
+!README.md
