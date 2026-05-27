@@ -2,7 +2,9 @@
 
 Real-time **front-side health monitor** for a single stock symbol. Gatekeeper answers one question continuously: *Is this ticker in play right now, or should I wait?*
 
-It is **not** a scanner, setup classifier, or entry signal. It is a traffic-light panel plus contextual warnings, built for Ross Cameron–style momentum day trading with Schwab market data and ThinkorSwim-aligned math where it matters (VWAP, MACD, EMAs).
+It is **not** a scanner, setup classifier, or order router. It is a traffic-light panel plus contextual warnings, built for momentum day trading with Schwab market data and ThinkorSwim-aligned math where it matters (VWAP, MACD, EMAs).
+
+Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md). Trading rules: [gatekeeper-spec.md](gatekeeper-spec.md).
 
 ---
 
@@ -22,47 +24,54 @@ Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY—only Row 1 fai
 
 - 9 EMA > 20 EMA (1m)
 - MACD histogram > 0 (1m, TOS ExpAverage)
-- Price above session VWAP (4:00 AM ET anchor, matches TOS DAY)
+- Price above session VWAP (4:00 AM ET anchor)
 - No high-volume sell in last 8 minutes
 - Bid–ask spread ≤ $0.10
 
-Failed checks show descriptive subtext (e.g. spread amount, high-volume bar time).
-
 ### Row 2 — setup row (four lights)
 
-- **Resistance** — tri-state vs KEY LVL ↑ (testing within 3¢ at level; approach 3–10¢)
-- **Support** — tri-state vs KEY LVL ↓ (testing within 3¢; **near** green when 0–10¢ above and not testing)
-- **Front side** — buy-side structure (tolerates small white consolidation; not a GO veto)
-- **Giveback** — pullback from trailing green-run high vs chain range (green &lt;30%, yellow 30–50%, red &gt;50%)
+- **Resistance** — tri-state vs KEY LVL ↑
+- **Support** — tri-state vs KEY LVL ↓
+- **Front side** — buy-side structure (not a GO veto)
+- **Giveback** — pullback from trailing green-run high
 
 ### Warnings (two columns)
 
-Timed bar warnings only list times from the **last 8 minutes**.
-
-| Bearish (red) | Bullish (green) |
-|---------------|-----------------|
-| Topping tail | Bottoming tail |
-| Doji on bullish run | Doji on bearish run |
-| Momentum exhaustion (bullish run) | Momentum exhaustion (bearish run) |
-| Tape slowdown after bullish run | Tape slowdown after bearish run |
-| Failed resistance breakout | Resistance breakout |
-| Failed support hold | Held support |
-| Price below 9 / 20 EMA | Price above 9 / 20 EMA |
-
-High-volume **sell** appears under **NO ENTRY** only (not duplicated in the warning list). **Large buy volume** can appear in the bullish column.
+Timed bar warnings only list times from the **last 8 minutes**. Bearish and bullish columns; high-volume sell appears under **NO ENTRY** subtext only.
 
 ### Context grid
 
-Price, day change, VWAP and delta, RVOL, 9/20 EMA, MACD hist, key levels, session label, halt status. Hover cells for calculation hints.
+Price, day change, VWAP and delta, 9/20 EMA, MACD hist, key levels, session label, halt status. Hover cells for calculation hints.
 
 ---
 
 ## Stack
 
-- **Node.js** (Express) — `server.js`
-- **Vanilla HTML/JS** — `public/index.html`
-- **Schwab API** — quotes + 1m/daily price history
-- **Docker** — production on corpus (`docker compose`)
+| Layer | Technology |
+|-------|------------|
+| API | Node.js 24, Express 5 |
+| UI | Vanilla HTML/CSS/JS (`public/index.html`) |
+| Data | Schwab Market Data API, Nasdaq halt RPC |
+| Deploy | Docker Compose on corpus |
+
+### Project layout
+
+```
+Gatekeeper/
+  server.js           # Entry: HTTP server, wiring, shutdown
+  routes/api.js       # REST routes
+  lib/
+    config.js         # Environment and tuning constants
+    store.js          # Shared runtime state (cache, tokens)
+    auth.js           # OAuth and token persistence
+    schwab.js         # Schwab HTTP client and rate limiting
+    session.js        # ET session, candles, VWAP anchor
+    indicators.js     # EMA / MACD / VWAP (TOS math)
+    signals.js        # Warnings, levels, traffic light
+    halts.js          # Halt detection
+    state.js          # Poll loop and state cache
+  public/index.html   # Dashboard UI
+```
 
 ---
 
@@ -70,35 +79,25 @@ Price, day change, VWAP and delta, RVOL, 9/20 EMA, MACD hist, key levels, sessio
 
 - Node.js 20+ (Docker image uses Node 24)
 - Schwab developer app with OAuth (Market Data production)
-- `.env` with API credentials (see below)
+- `.env` — copy from [`.env.example`](.env.example)
 
 ---
 
 ## Configuration
 
-Create `.env` in the project root (never commit it):
-
-```env
-SCHWAB_CLIENT_ID=your_app_key
-SCHWAB_CLIENT_SECRET=your_app_secret
-PUBLIC_URL=https://your-host.example
-REDIRECT_URI=https://your-host.example/callback
-
-# Optional
-TOKEN_PATH=/data/tokens.json
-CERT_PATH=/path/to/cert.pem
-KEY_PATH=/path/to/key.pem
-QUOTE_POLL_MS=1000
-CANDLE_POLL_MS=2000
-```
-
 | Variable | Purpose |
 |----------|---------|
 | `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` | OAuth |
 | `PUBLIC_URL` | Base URL for OAuth redirect |
-| `REDIRECT_URI` | Must match Schwab app settings |
+| `REDIRECT_URI` | Must match Schwab app settings (`/callback`) |
 | `TOKEN_PATH` | Persisted tokens (Docker volume recommended) |
-| `CERT_PATH` / `KEY_PATH` | HTTPS in production; omit for local HTTP |
+| `CERT_PATH` / `KEY_PATH` | HTTPS in production |
+| `QUOTE_POLL_MS` | Schwab quote poll (default 1000) |
+| `CANDLE_POLL_MS` | 1m candle poll (default 2000) |
+| `STATE_POLL_MS` | Frontend state poll hint in `/api/health` |
+| `DAILY_CACHE_MS` | Daily bars cache for key levels |
+| `INDICATOR_1M_CACHE_MS` | MACD series cache |
+| `NASDAQ_HALT_POLL_MS` | Nasdaq halt list refresh |
 
 ---
 
@@ -107,13 +106,11 @@ CANDLE_POLL_MS=2000
 ```bash
 cd Gatekeeper
 npm install
-# Create .env from the Configuration section above
+cp .env.example .env   # fill in Schwab credentials
 node server.js
 ```
 
 Open `http://localhost:3000`, enter a symbol, and complete Schwab login at `/login` if prompted.
-
-Tokens are stored in `tokens.json` locally (or path from `TOKEN_PATH`).
 
 ---
 
@@ -123,30 +120,32 @@ Tokens are stored in `tokens.json` locally (or path from `TOKEN_PATH`).
 docker compose up --build
 ```
 
-Default compose maps host **443 → 3000**, mounts TLS certs and a persistent volume for tokens. Adjust `docker-compose.yml` for your environment.
+Default compose maps host **443 → 3000**, mounts TLS certs and a persistent volume for tokens.
 
 ---
 
-## API (summary)
+## API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | UI |
-| `GET /login` | Schwab OAuth |
+| `GET /` | Dashboard UI |
+| `GET /login`, `GET /api/login` | Schwab OAuth |
 | `GET /callback` | OAuth redirect |
-| `GET /api/state/:symbol` | Full state JSON for symbol |
+| `GET /api/state/:symbol` | Full state JSON (cached server-side) |
 | `GET /api/health` | Auth, rate limits, poll cadence |
 | `GET /api/status` | Session hours / market session |
+
+Example `GET /api/state/AAPL` when ready: `status: ok`, `traffic_light_confirmed`, `front_side`, `level_signals`, `context`, `warnings`.
 
 ---
 
 ## Deployment (corpus)
 
-From your machine (example):
+Source is **baked into the Docker image** — always rebuild after code changes:
 
 ```bash
-scp server.js ark@corpus:~/Gatekeeper/server.js
-scp public/index.html ark@corpus:~/Gatekeeper/public/index.html
+# From your machine
+scp -r lib routes server.js public/index.html ark@corpus:~/Gatekeeper/
 ssh ark@corpus "cd ~/Gatekeeper && docker compose up --build -d"
 ```
 
@@ -156,23 +155,23 @@ Or on the server:
 cd ~/Gatekeeper && ./deploy.sh
 ```
 
-Backend changes are picked up after container restart; the image copies `server.js` and `public/` at build time.
+Post-deploy smoke: see [TESTING.md](TESTING.md#corpus-smoke-post-deploy).
 
 ---
 
 ## Documentation
 
-| File | Contents |
+| File | Audience |
 |------|----------|
-| [gatekeeper-spec.md](gatekeeper-spec.md) | Full signal definitions, math, and UI rules |
-| [TESTING.md](TESTING.md) | Manual verification checklist vs ThinkorSwim |
-| [CLAUDE.md](CLAUDE.md) | Notes for AI-assisted development |
+| [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) | Engineering / CTO — architecture and operations |
+| [gatekeeper-spec.md](gatekeeper-spec.md) | Trading — signal definitions and UI rules |
+| [TESTING.md](TESTING.md) | QA — TOS verification and deploy smoke |
 
 ---
 
 ## Trading hours
 
-Gatekeeper is intended for extended hours monitoring aligned with the cheatsheet: roughly **4:00 AM – 8:00 PM ET**, with pre-market data included where Schwab provides it.
+Extended hours monitoring: roughly **4:00 AM – 8:00 PM ET**, with pre-market data where Schwab provides it.
 
 ---
 

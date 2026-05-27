@@ -640,15 +640,10 @@
     spread_ok: 'dot-spread'
   };
 
-  const WARNING_BEARISH = new Set([
-    'topping_tail', 'doji_bull_run', 'momentum_exhaustion_up',
-    'tape_slowdown_bull_run', 'lost_9_ema', 'lost_20_ema',
-    'failed_resistance_breakout', 'failed_support_hold'
-  ]);
   const WARNING_BULLISH = new Set([
     'bottoming_tail', 'doji_bear_run', 'high_volume_buy', 'momentum_exhaustion_down',
-    'tape_slowdown_bear_run', 'above_9_ema', 'above_20_ema',
-    'resistance_breakout', 'held_support'
+    'momentum_exhaustion_up', 'tape_slowdown_bear_run', 'tape_slowdown_bull_run',
+    'above_9_ema', 'above_20_ema', 'resistance_breakout', 'held_support'
   ]);
 
   const WARNING_TEXT = {
@@ -753,11 +748,6 @@
     return `${ds}$${Math.abs(dollars).toFixed(2)} (${ps}${pct.toFixed(2)}%)`;
   }
 
-  function formatRvol(n) {
-    if (n == null || !Number.isFinite(n)) return '—';
-    return `${n.toFixed(1)}x`;
-  }
-
   function formatMacdHist(n) {
     if (n == null || !Number.isFinite(n)) return '—';
     const sign = n >= 0 ? '+' : '-';
@@ -809,11 +799,6 @@
     return ema9 > ema20 ? 'ctx-green' : 'ctx-red';
   }
 
-  function colorRvol(rvol) {
-    if (!Number.isFinite(rvol)) return null;
-    return rvol >= 5 ? 'ctx-green' : 'ctx-red';
-  }
-
   function colorVwapDelta(dollars) {
     if (!Number.isFinite(dollars)) return null;
     if (dollars > 0) return 'ctx-green';
@@ -830,13 +815,6 @@
       case 'Closed': return 'ctx-red';
       default: return null;
     }
-  }
-
-  function failingConditions(frontSide) {
-    if (!frontSide) return [];
-    return Object.entries(frontSide)
-      .filter(([, v]) => !v)
-      .map(([k]) => FAIL_LABELS[k] || CONDITION_LABELS[k]);
   }
 
   /** Row 1 fail lines with spread $ and HV bar time when available. */
@@ -916,23 +894,25 @@
     tlSubtext.textContent = '';
   }
 
+  /**
+   * Maps confirmed banner state to CSS class, headline, and NO ENTRY / CAUTION subtext.
+   * @param {string} confirmed - LOOK_FOR_SETUP | CAUTION | NO_ENTRY
+   */
   function renderTrafficLight(confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context) {
-    const legacy = confirmed === 'IN_PLAY' ? 'LOOK_FOR_SETUP'
-      : confirmed === 'BACK_SIDE' ? 'NO_ENTRY' : confirmed;
     const cls = {
       LOOK_FOR_SETUP: 'tl-in_play',
       CAUTION: 'tl-caution',
       NO_ENTRY: 'tl-back_side'
-    }[legacy] || '';
+    }[confirmed] || '';
     trafficLight.className = cls;
     const titles = {
       LOOK_FOR_SETUP: 'LOOK FOR SETUP',
       CAUTION: 'CAUTION',
       NO_ENTRY: 'NO ENTRY'
     };
-    tlHeadline.textContent = titles[legacy] || '—';
+    tlHeadline.textContent = titles[confirmed] || '—';
     tlSubtext.textContent = trafficLightSubtext(
-      legacy, frontSide, levelSignals, momentum, giveback, warningBars, context
+      confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context
     );
   }
 
@@ -1150,9 +1130,8 @@
 
   function prefetchState() {
     if (!symbol) return;
-    fetch(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
-      .then(res => res.json())
-      .then(data => {
+    fetchJson(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
+      .then(({ data }) => {
         if (data?.status === 'ok' && data.context) ctxSnapshot = data.context;
       })
       .catch(() => {});
@@ -1196,9 +1175,8 @@
       directionFromCompletedBar(ctxSnapshot);
     if (dir) flashClock(dir);
     else if (symbol) {
-      fetch(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
-        .then(res => res.json())
-        .then(data => {
+      fetchJson(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
+        .then(({ data }) => {
           if (data?.status !== 'ok' || !data.context) return;
           ctxSnapshot = data.context;
           const barDir = directionFromCompletedBar(data.context);
@@ -1286,6 +1264,7 @@
     }
   }
 
+  /** Renders warning rows in bearish/bullish columns; fades out codes no longer active. */
   function syncWarnings(codes, bars) {
     const incoming = new Set(codes || []);
     warningBars = bars && typeof bars === 'object' ? bars : {};
@@ -1441,11 +1420,26 @@
     el.textContent = `Schwab ${cpmStr}/min (limit ~120) · quote ${q}s · 1m ${c}s · hover cells for math`;
   }
 
+  /**
+   * @param {string} url
+   * @returns {Promise<{ ok: boolean, status: number, data: object|null }>}
+   */
+  async function fetchJson(url, options) {
+    const res = await fetch(url, options);
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      return { ok: res.ok, status: res.status, data: null };
+    }
+    return { ok: res.ok, status: res.status, data };
+  }
+
   async function pollHealth() {
     try {
-      const res = await fetch('/api/health');
-      if (!res.ok) return;
-      healthData = await res.json();
+      const { ok, data } = await fetchJson('/api/health');
+      if (!ok || !data) return;
+      healthData = data;
       renderApiStats(healthData);
       updateOverlays();
     } catch {
@@ -1457,11 +1451,8 @@
     if (!symbol) return;
 
     try {
-      const res = await fetch(`/api/state/${encodeURIComponent(symbol)}`);
-      let data = null;
-      try {
-        data = await res.json();
-      } catch {
+      const { ok, status, data } = await fetchJson(`/api/state/${encodeURIComponent(symbol)}`);
+      if (!data) {
         updateOverlays();
         return;
       }
@@ -1501,7 +1492,7 @@
         return;
       }
 
-      if (!res.ok || data?.status !== 'ok') {
+      if (!ok || data?.status !== 'ok') {
         updateOverlays();
         return;
       }
