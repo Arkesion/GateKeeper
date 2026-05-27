@@ -4,6 +4,10 @@ Real-time **front-side health monitor** for a single stock symbol. Gatekeeper an
 
 It is **not** a scanner, setup classifier, or order router. It is a traffic-light panel plus contextual warnings, built for momentum day trading with Schwab market data and ThinkorSwim-aligned math where it matters (VWAP, MACD, EMAs).
 
+![Gatekeeper dashboard: NO ENTRY banner, row 1 and row 2 status dots, bearish and bullish warnings, context grid](docs/dashboard.png)
+
+*Example: NVDA during after hours with NO ENTRY (row 1 failures), setup-row lights, and recent 1m warnings.*
+
 Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)
 
 ---
