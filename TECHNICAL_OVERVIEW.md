@@ -1,13 +1,12 @@
-# Gatekeeper — Technical Overview
+# Gatekeeper Technical Overview
 
-**Audience:** Engineering leadership, platform review, technical hiring discussion.  
-**Companion docs:** [README.md](README.md) (operator guide), [gatekeeper-spec.md](gatekeeper-spec.md) (trading rules).
+For operators, see [README.md](README.md). For verification, see [TESTING.md](TESTING.md).
 
 ---
 
 ## 1. Executive summary
 
-Gatekeeper is a **single-symbol, real-time market-health dashboard** for intraday momentum trading. It continuously evaluates whether a ticker is structurally eligible for long-side setup hunting (“in play”) using Schwab quotes and 1-minute candles.
+Gatekeeper is a **single-symbol, real-time market-health dashboard** for intraday momentum trading. It continuously evaluates whether a ticker is structurally eligible for long-side setup hunting ("in play") using Schwab quotes and 1-minute candles.
 
 **What it is**
 
@@ -28,9 +27,9 @@ Momentum day traders need a fast, consistent answer: *Should I engage with this 
 
 Gatekeeper standardizes that decision into:
 
-1. **Row 1 (GO)** — structural eligibility (trend, VWAP, tape, spread).
-2. **Row 2 (setup)** — location vs key levels, front-side structure, giveback.
-3. **Warnings** — recent 1m bar patterns (last 8 minutes).
+1. **Row 1 (GO):** structural eligibility (trend, VWAP, tape, spread).
+2. **Row 2 (setup):** location vs key levels, front-side structure, giveback.
+3. **Warnings:** recent 1m bar patterns (last 8 minutes).
 
 Only Row 1 failures force **NO ENTRY**. Row 2 issues surface as **CAUTION** so the trader can still watch for a setup.
 
@@ -43,7 +42,7 @@ flowchart TB
   subgraph client [Browser]
     UI[public/index.html]
   end
-  subgraph host [Docker on corpus]
+  subgraph host [Docker host]
     GK[Gatekeeper Node process]
     Vol[(tokens volume)]
   end
@@ -118,21 +117,21 @@ sequenceDiagram
 | `lib/halts.js` | Halt / LUDP / session status line |
 | `lib/state.js` | Poll orchestration, `computeStateFromCache` |
 
-Design choice: **modular monolith** in one deployable unit—no microservices—appropriate for single-operator, single-symbol latency-sensitive use.
+Design choice: **modular monolith** in one deployable unit (no microservices), appropriate for single-operator, single-symbol latency-sensitive use.
 
 ---
 
 ## 6. Signal pipeline (summary)
 
-1. **Ingest** — Quote + 1m candles (session + indicator series) + daily bars for prior HOD/LOD.
-2. **Normalize** — Merge sources, filter ET session day, optional gap trim on session series.
-3. **Indicators** — VWAP from session anchor; EMA(9/20) and MACD(12,26,9) on indicator series (TOS ExpAverage).
-4. **Row 1** — Boolean GO map: EMAs, MACD, VWAP, no HV sell (8m), spread ≤ $0.10.
-5. **Row 2** — Tri-state resistance/support; front-side structure; giveback %.
-6. **Warnings** — Pattern detectors on completed 1m bars in 8m window; level events merged.
-7. **Output** — JSON cached per symbol; client renders.
+1. **Ingest:** Quote + 1m candles (session + indicator series) + daily bars for prior HOD/LOD.
+2. **Normalize:** Merge sources, filter ET session day, optional gap trim on session series.
+3. **Indicators:** VWAP from session anchor; EMA(9/20) and MACD(12,26,9) on indicator series (TOS ExpAverage).
+4. **Row 1:** Boolean GO map: EMAs, MACD, VWAP, no HV sell (8m), spread ≤ $0.10.
+5. **Row 2:** Tri-state resistance/support; front-side structure; giveback %.
+6. **Warnings:** Pattern detectors on completed 1m bars in 8m window; level events merged.
+7. **Output:** JSON cached per symbol; client renders.
 
-Full thresholds and bar definitions: [gatekeeper-spec.md](gatekeeper-spec.md).
+Thresholds and bar definitions live in `lib/signals.js` and the README feature sections.
 
 ---
 
@@ -156,8 +155,8 @@ Full thresholds and bar definitions: [gatekeeper-spec.md](gatekeeper-spec.md).
 
 ### Other endpoints
 
-- `GET /api/health` — `authenticated`, `schwab_calls_per_min`, `poll_intervals_ms`, `rate_limit_status`
-- `GET /api/status` — `session`, `open`, ETH hours label
+- `GET /api/health`: `authenticated`, `schwab_calls_per_min`, `poll_intervals_ms`, `rate_limit_status`
+- `GET /api/status`: `session`, `open`, ETH hours label
 
 Symbol validation: `^[A-Z][A-Z0-9.-]{0,7}$` before Schwab calls.
 
@@ -173,7 +172,7 @@ Symbol validation: `^[A-Z][A-Z0-9.-]{0,7}$` before Schwab calls.
 | Deploy | `docker compose up --build -d` (image copies source; restart alone insufficient) |
 | Shutdown | SIGTERM/SIGINT clears poll timers before exit |
 
-**Verification:** [TESTING.md](TESTING.md) — corpus smoke plus ThinkorSwim manual checks.
+**Verification:** [TESTING.md](TESTING.md) (production smoke plus ThinkorSwim manual checks).
 
 ---
 
@@ -207,7 +206,7 @@ Symbol validation: `^[A-Z][A-Z0-9.-]{0,7}$` before Schwab calls.
 
 ---
 
-## 12. Quick reference — data flow
+## 12. Quick reference: data flow
 
 ```
 Schwab quote (1s) ──┐
@@ -218,7 +217,3 @@ Schwab daily (60s) ─┘         │                      │
                               │                               │
 Browser ◄── GET /api/state ◄──┴───────────────────────────────┘
 ```
-
----
-
-*Document version aligns with post-modularization codebase (`lib/` layout) and dead-code removal (no RVOL).*

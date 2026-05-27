@@ -4,7 +4,7 @@ Real-time **front-side health monitor** for a single stock symbol. Gatekeeper an
 
 It is **not** a scanner, setup classifier, or order router. It is a traffic-light panel plus contextual warnings, built for momentum day trading with Schwab market data and ThinkorSwim-aligned math where it matters (VWAP, MACD, EMAs).
 
-Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md). Trading rules: [gatekeeper-spec.md](gatekeeper-spec.md).
+Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)
 
 ---
 
@@ -18,22 +18,22 @@ Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md). Trading rul
 | **CAUTION** | Row 1 green; setup row (4 lights) not fully clear |
 | **LOOK FOR SETUP** | Row 1 and Row 2 all green |
 
-Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY—only Row 1 failures do.
+Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY; only Row 1 failures do.
 
-### Row 1 — five GO checks
+### Row 1: five GO checks
 
 - 9 EMA > 20 EMA (1m)
 - MACD histogram > 0 (1m, TOS ExpAverage)
 - Price above session VWAP (4:00 AM ET anchor)
 - No high-volume sell in last 8 minutes
-- Bid–ask spread ≤ $0.10
+- Bid-ask spread ≤ $0.10
 
-### Row 2 — setup row (four lights)
+### Row 2: setup row (four lights)
 
-- **Resistance** — tri-state vs KEY LVL ↑
-- **Support** — tri-state vs KEY LVL ↓
-- **Front side** — buy-side structure (not a GO veto)
-- **Giveback** — pullback from trailing green-run high
+- **Resistance:** tri-state vs KEY LVL ↑
+- **Support:** tri-state vs KEY LVL ↓
+- **Front side:** buy-side structure (not a GO veto)
+- **Giveback:** pullback from trailing green-run high
 
 ### Warnings (two columns)
 
@@ -52,7 +52,7 @@ Price, day change, VWAP and delta, 9/20 EMA, MACD hist, key levels, session labe
 | API | Node.js 24, Express 5 |
 | UI | Vanilla HTML/CSS/JS (`public/index.html`) |
 | Data | Schwab Market Data API, Nasdaq halt RPC |
-| Deploy | Docker Compose on corpus |
+| Deploy | Docker Compose (optional HTTPS) |
 
 ### Project layout
 
@@ -79,7 +79,7 @@ Gatekeeper/
 
 - Node.js 20+ (Docker image uses Node 24)
 - Schwab developer app with OAuth (Market Data production)
-- `.env` — copy from [`.env.example`](.env.example)
+- `.env`: copy from [`.env.example`](.env.example)
 
 ---
 
@@ -139,23 +139,33 @@ Example `GET /api/state/AAPL` when ready: `status: ok`, `traffic_light_confirmed
 
 ---
 
-## Deployment (corpus)
+## Production deployment
 
-Source is **baked into the Docker image** — always rebuild after code changes:
+Source is **baked into the Docker image**. Rebuild after code changes; `docker compose restart` alone does not refresh application code.
 
-```bash
-# From your machine
-scp -r lib routes server.js public/index.html ark@corpus:~/Gatekeeper/
-ssh ark@corpus "cd ~/Gatekeeper && docker compose up --build -d"
-```
-
-Or on the server:
+On the server (after clone, `.env`, TLS certs, and token volume are configured):
 
 ```bash
-cd ~/Gatekeeper && ./deploy.sh
+cd /path/to/Gatekeeper
+docker compose up --build -d
 ```
 
-Post-deploy smoke: see [TESTING.md](TESTING.md#corpus-smoke-post-deploy).
+If the repo is on the server with git:
+
+```bash
+./deploy.sh   # git pull && docker compose up --build -d
+```
+
+To copy files from a dev machine (no git on the host):
+
+```bash
+scp -r lib routes server.js public/index.html user@your-server:/path/to/Gatekeeper/
+ssh user@your-server 'cd /path/to/Gatekeeper && docker compose up --build -d'
+```
+
+Set `PUBLIC_URL` and `REDIRECT_URI` in `.env` to your public HTTPS URL (Schwab OAuth must match).
+
+Post-deploy smoke: see [TESTING.md](TESTING.md#production-smoke-post-deploy).
 
 ---
 
@@ -163,15 +173,14 @@ Post-deploy smoke: see [TESTING.md](TESTING.md#corpus-smoke-post-deploy).
 
 | File | Audience |
 |------|----------|
-| [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) | Engineering / CTO — architecture and operations |
-| [gatekeeper-spec.md](gatekeeper-spec.md) | Trading — signal definitions and UI rules |
-| [TESTING.md](TESTING.md) | QA — TOS verification and deploy smoke |
+| [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) | Engineering: architecture and operations |
+| [TESTING.md](TESTING.md) | QA: TOS verification and deploy smoke |
 
 ---
 
 ## Trading hours
 
-Extended hours monitoring: roughly **4:00 AM – 8:00 PM ET**, with pre-market data where Schwab provides it.
+Extended hours monitoring: roughly **4:00 AM to 8:00 PM ET**, with pre-market data where Schwab provides it.
 
 ---
 

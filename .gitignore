@@ -2,7 +2,7 @@
 node_modules/
 tokens.json
 
-# Documentation — runtime on corpus uses server.js + public/ only
+# Documentation — runtime deploy only needs server.js + public/ (+ lib/, routes/)
 *.md
 !README.md
 !TECHNICAL_OVERVIEW.md
