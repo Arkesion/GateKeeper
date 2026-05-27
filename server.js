@@ -44,11 +44,15 @@ const MACD_MIN_BARS_SPARSE = 20;
 const SESSION_MIN_BARS = 4;
 const WARNING_LOOKBACK_BARS = 10;
 const TOPPING_TAIL_WICK_RATIO = 0.6;
+const BOTTOMING_TAIL_WICK_RATIO = 0.6;
 const DOJI_BODY_RATIO = 0.1;
-/** Bearish 1m bar volume vs prior bars + scan window (no L2 — tape proxy). */
-const HIGH_VOL_SELL_RATIO = 2.0;
-const HIGH_VOL_SELL_PRIOR_BARS = 8;
-const HIGH_VOL_SELL_LOOKBACK_BARS = 8;
+const DOJI_RUN_LOOKBACK = 5;
+const DOJI_RUN_MIN_SAME_DIR = 3;
+/** High-volume 1m bar vs prior bars (no L2 — tape proxy). */
+const HIGH_VOL_RATIO = 2.0;
+const HIGH_VOL_PRIOR_BARS = 8;
+const HIGH_VOL_LOOKBACK_BARS = 8;
+const TAPE_SLOW_RATIO = 0.5;
 /** Front-side momentum: higher-highs ladder in ~5 completed 1m bars (not a GO veto). */
 const MOMENTUM_HH_LOOKBACK = 5;
 const MOMENTUM_HH_MIN_STEPS = 3;
@@ -2015,11 +2019,71 @@ function isToppingTailBar(bar) {
   return upperWick / range > TOPPING_TAIL_WICK_RATIO;
 }
 
+function isBottomingTailBar(bar) {
+  const range = bar.high - bar.low;
+  if (range <= 0) return false;
+  const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+  return lowerWick / range > BOTTOMING_TAIL_WICK_RATIO;
+}
+
 function isDojiBar(bar) {
   const range = bar.high - bar.low;
   if (range <= 0) return false;
   const body = Math.abs(bar.close - bar.open);
   return body / range < DOJI_BODY_RATIO;
+}
+
+function isBullishBar(bar) {
+  return bar && Number.isFinite(bar.close) && Number.isFinite(bar.open) && bar.close > bar.open;
+}
+
+function isBearishBar(bar) {
+  return bar && Number.isFinite(bar.close) && Number.isFinite(bar.open) && bar.close < bar.open;
+}
+
+function priorBarsBefore(completedBars, bar, count) {
+  const idx = completedBars.indexOf(bar);
+  if (idx <= 0) return [];
+  return completedBars.slice(Math.max(0, idx - count), idx);
+}
+
+function isDojiOnBullishRunBar(bar, completedBars) {
+  if (!isDojiBar(bar)) return false;
+  const prior = priorBarsBefore(completedBars, bar, DOJI_RUN_LOOKBACK);
+  if (prior.length < DOJI_RUN_MIN_SAME_DIR) return false;
+  const bullish = prior.filter(isBullishBar).length;
+  return bullish >= DOJI_RUN_MIN_SAME_DIR;
+}
+
+function isDojiOnBearishRunBar(bar, completedBars) {
+  if (!isDojiBar(bar)) return false;
+  const prior = priorBarsBefore(completedBars, bar, DOJI_RUN_LOOKBACK);
+  if (prior.length < DOJI_RUN_MIN_SAME_DIR) return false;
+  const bearish = prior.filter(isBearishBar).length;
+  return bearish >= DOJI_RUN_MIN_SAME_DIR;
+}
+
+function isHighVolumeBar(bar, completedBars, direction) {
+  if (!bar) return false;
+  if (direction === 'sell' && !isBearishBar(bar)) return false;
+  if (direction === 'buy' && !isBullishBar(bar)) return false;
+  const vol = bar.volume;
+  if (!Number.isFinite(vol) || vol <= 0) return false;
+  const idx = completedBars.indexOf(bar);
+  if (idx < HIGH_VOL_PRIOR_BARS) return false;
+  const prior = completedBars.slice(idx - HIGH_VOL_PRIOR_BARS, idx);
+  const avg = prior.reduce((s, c) => s + (Number.isFinite(c.volume) ? c.volume : 0), 0) /
+    HIGH_VOL_PRIOR_BARS;
+  if (avg <= 0) return false;
+  return vol >= avg * HIGH_VOL_RATIO;
+}
+
+function isHighVolumeSellBar(bar, completedBars) {
+  return isHighVolumeBar(bar, completedBars, 'sell');
+}
+
+function isHighVolumeBuyBar(bar, completedBars) {
+  return isHighVolumeBar(bar, completedBars, 'buy');
 }
 
 function findMostRecentWarningBar(completedBars, predicate, lookback = WARNING_LOOKBACK_BARS) {
@@ -2030,9 +2094,18 @@ function findMostRecentWarningBar(completedBars, predicate, lookback = WARNING_L
   return null;
 }
 
+function findAllWarningBarsInLookback(completedBars, predicate, lookback = WARNING_LOOKBACK_BARS) {
+  const window = completedBars.slice(-lookback);
+  return window.filter(bar => predicate(bar, completedBars));
+}
+
+function formatWarningBarTimes(barList) {
+  return barList.map(b => formatEtHm(b.datetime)).join(', ');
+}
+
 function hasHighVolSellInLookback(completedBars) {
   return findMostRecentWarningBar(
-    completedBars, isHighVolumeSellBar, HIGH_VOL_SELL_LOOKBACK_BARS
+    completedBars, isHighVolumeSellBar, HIGH_VOL_LOOKBACK_BARS
   ) != null;
 }
 
@@ -2051,19 +2124,6 @@ function computeParabolicMomentum(completed1m, forming1m) {
   return hhSteps >= MOMENTUM_HH_MIN_STEPS;
 }
 
-function isHighVolumeSellBar(bar, completedBars) {
-  if (!bar || bar.close >= bar.open) return false;
-  const vol = bar.volume;
-  if (!Number.isFinite(vol) || vol <= 0) return false;
-  const idx = completedBars.indexOf(bar);
-  if (idx < HIGH_VOL_SELL_PRIOR_BARS) return false;
-  const prior = completedBars.slice(idx - HIGH_VOL_SELL_PRIOR_BARS, idx);
-  const avg = prior.reduce((s, c) => s + (Number.isFinite(c.volume) ? c.volume : 0), 0) /
-    HIGH_VOL_SELL_PRIOR_BARS;
-  if (avg <= 0) return false;
-  return vol >= avg * HIGH_VOL_SELL_RATIO;
-}
-
 function computeWarnings(candles1m, completed1m) {
   const codes = [];
   const bars = {};
@@ -2071,42 +2131,72 @@ function computeWarnings(candles1m, completed1m) {
 
   const bar = candles1m[candles1m.length - 2];
 
-  const toppingBar = findMostRecentWarningBar(completed1m, isToppingTailBar);
-  if (toppingBar) {
+  const toppingBars = findAllWarningBarsInLookback(completed1m, isToppingTailBar);
+  if (toppingBars.length) {
     codes.push('topping_tail');
-    bars.topping_tail = formatEtHm(toppingBar.datetime);
+    bars.topping_tail = formatWarningBarTimes(toppingBars);
   }
 
-  const dojiBar = findMostRecentWarningBar(completed1m, isDojiBar);
-  if (dojiBar) {
-    codes.push('doji');
-    bars.doji = formatEtHm(dojiBar.datetime);
+  const bottomingBars = findAllWarningBarsInLookback(completed1m, isBottomingTailBar);
+  if (bottomingBars.length) {
+    codes.push('bottoming_tail');
+    bars.bottoming_tail = formatWarningBarTimes(bottomingBars);
   }
 
-  const hvSellBar = findMostRecentWarningBar(
-    completed1m, isHighVolumeSellBar, HIGH_VOL_SELL_LOOKBACK_BARS
+  const dojiBullRun = findAllWarningBarsInLookback(completed1m, isDojiOnBullishRunBar);
+  if (dojiBullRun.length) {
+    codes.push('doji_bull_run');
+    bars.doji_bull_run = formatWarningBarTimes(dojiBullRun);
+  }
+
+  const dojiBearRun = findAllWarningBarsInLookback(completed1m, isDojiOnBearishRunBar);
+  if (dojiBearRun.length) {
+    codes.push('doji_bear_run');
+    bars.doji_bear_run = formatWarningBarTimes(dojiBearRun);
+  }
+
+  const hvSellBars = findAllWarningBarsInLookback(
+    completed1m, isHighVolumeSellBar, HIGH_VOL_LOOKBACK_BARS
   );
-  if (hvSellBar) {
-    codes.push('high_volume_sell');
-    bars.high_volume_sell = formatEtHm(hvSellBar.datetime);
+  if (hvSellBars.length) {
+    bars.high_volume_sell = formatWarningBarTimes(hvSellBars);
+  }
+
+  const hvBuyBars = findAllWarningBarsInLookback(
+    completed1m, isHighVolumeBuyBar, HIGH_VOL_LOOKBACK_BARS
+  );
+  if (hvBuyBars.length) {
+    codes.push('high_volume_buy');
+    bars.high_volume_buy = formatWarningBarTimes(hvBuyBars);
   }
 
   const last3 = candles1m.slice(-4, -1);
   if (last3.length === 3) {
-    const bullishAll = last3.every(c => c.close > c.open);
     const bodies = last3.map(c => Math.abs(c.close - c.open));
     const heights = last3.map(c => c.high - c.low);
-    const bodiesShrinking   = bodies[0] > bodies[1] && bodies[1] > bodies[2];
-    const heightsShrinking  = heights[0] > heights[1] && heights[1] > heights[2];
-    if (bullishAll && (bodiesShrinking || heightsShrinking)) {
-      codes.push('momentum_exhaustion');
+    const bodiesShrinking = bodies[0] > bodies[1] && bodies[1] > bodies[2];
+    const heightsShrinking = heights[0] > heights[1] && heights[1] > heights[2];
+    const shrinking = bodiesShrinking || heightsShrinking;
+    if (last3.every(isBullishBar) && shrinking) {
+      codes.push('momentum_exhaustion_up');
+    }
+    if (last3.every(isBearishBar) && shrinking) {
+      codes.push('momentum_exhaustion_down');
     }
   }
 
   const prior10 = candles1m.slice(-12, -2);
   if (prior10.length >= 10) {
     const prior10Avg = prior10.reduce((s, c) => s + c.volume, 0) / prior10.length;
-    if (bar.volume < prior10Avg * 0.5) codes.push('tape_slowdown');
+    if (Number.isFinite(bar.volume) && bar.volume < prior10Avg * TAPE_SLOW_RATIO) {
+      const runPrior = priorBarsBefore(completed1m, bar, DOJI_RUN_LOOKBACK);
+      if (runPrior.filter(isBullishBar).length >= DOJI_RUN_MIN_SAME_DIR) {
+        codes.push('tape_slowdown_bull_run');
+      }
+      if (runPrior.filter(isBearishBar).length >= DOJI_RUN_MIN_SAME_DIR) {
+        codes.push('tape_slowdown_bear_run');
+      }
+    }
   }
 
   const completedCloses = completed1m.map(c => c.close);
@@ -2117,6 +2207,12 @@ function computeWarnings(candles1m, completed1m) {
   }
   if (Number.isFinite(ema20_1m) && bar.close < ema20_1m) {
     codes.push('lost_20_ema');
+  }
+  if (Number.isFinite(ema9_1m) && bar.close > ema9_1m) {
+    codes.push('above_9_ema');
+  }
+  if (Number.isFinite(ema20_1m) && bar.close > ema20_1m) {
+    codes.push('above_20_ema');
   }
 
   return { codes, bars };
@@ -2305,6 +2401,35 @@ function computeSupportSignal(price, keyDown, completedBars, formingBar) {
   };
 }
 
+function formatLevelWarningDetail(sig) {
+  if (!sig?.level_price || !Number.isFinite(sig.level_price)) return '';
+  const label = sig.level_label ? ` · ${sig.level_label}` : '';
+  return `$${sig.level_price.toFixed(2)}${label}`;
+}
+
+/** KEY LVL ↑/↓ signals → bearish/bullish warning rows. */
+function mergeLevelWarnings(warningResult, levelSignals) {
+  const r = levelSignals?.resistance;
+  const s = levelSignals?.support;
+
+  if (r?.phase === 'reject') {
+    warningResult.codes.push('failed_resistance_breakout');
+    warningResult.bars.failed_resistance_breakout = formatLevelWarningDetail(r);
+  }
+  if (r?.phase === 'broke_through') {
+    warningResult.codes.push('resistance_breakout');
+    warningResult.bars.resistance_breakout = formatLevelWarningDetail(r);
+  }
+  if (s?.phase === 'broken') {
+    warningResult.codes.push('failed_support_hold');
+    warningResult.bars.failed_support_hold = formatLevelWarningDetail(s);
+  } else if (s?.phase === 'near' || s?.phase === 'testing') {
+    warningResult.codes.push('held_support');
+    warningResult.bars.held_support = formatLevelWarningDetail(s);
+  }
+  return warningResult;
+}
+
 function row1AllGreen(frontSide) {
   return frontSide && Object.values(frontSide).every(Boolean);
 }
@@ -2485,8 +2610,8 @@ function buildCalcHints({
         `→ ${front_side.vwap ? 'GREEN' : 'RED'}`
       ]),
       no_hv_sell: nl([
-        `GO check: no high-volume sell order in last ${HIGH_VOL_SELL_LOOKBACK_BARS} completed 1m bars.`,
-        `Bearish bar with volume ≥ 2× prior ${HIGH_VOL_SELL_PRIOR_BARS}-bar avg = HV sell (see warnings).`,
+        `GO check: no high-volume sell order in last ${HIGH_VOL_LOOKBACK_BARS} completed 1m bars.`,
+        `Bearish bar with volume ≥ 2× prior ${HIGH_VOL_PRIOR_BARS}-bar avg = HV sell (see warnings).`,
         `→ ${front_side.no_hv_sell ? 'GREEN' : 'RED (HV sell in window)'}`
       ]),
       spread_ok: nl([
@@ -2644,6 +2769,7 @@ function computeStateFromCache(symbol) {
       price, keyLevels.key_level_down, completed1m, forming1m
     )
   };
+  mergeLevelWarnings(warningResult, level_signals);
   const tradingStatus = computeTradingStatus(symbol, quote, now);
   const minutePulse = minuteClosePulseFromBars(completed1m);
 

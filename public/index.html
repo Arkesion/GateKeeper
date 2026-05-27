@@ -141,22 +141,62 @@
       font-size: 11px;
     }
 
-    /* ── Warnings ── */
-    #warnings-stack {
+    /* ── Warnings (bearish left / bullish right) ── */
+    #warnings-panel {
       width: min(90vw, 900px);
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
       min-height: 0;
     }
 
+    .warnings-col {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 0 8px;
+      min-width: 0;
+    }
+
+    .warnings-col-bearish {
+      border-right: 1px solid #444;
+      padding-right: 14px;
+    }
+
+    .warnings-col-bullish {
+      padding-left: 14px;
+    }
+
+    .warnings-col-label {
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      opacity: 0.55;
+      margin-bottom: 2px;
+    }
+
+    .warnings-col-bearish .warnings-col-label { color: #ff5555; }
+    .warnings-col-bullish .warnings-col-label { color: #00dd77; }
+
     .warning-row {
       border: 1px solid #444;
-      padding: 14px 20px;
-      font-size: 16px;
-      color: #ffaa00;
+      padding: 12px 14px;
+      font-size: 15px;
+      line-height: 1.35;
       opacity: 0;
       transition: opacity 0.35s ease;
+    }
+
+    .warning-row.warning-bearish {
+      color: #ff5555;
+      border-color: #662222;
+      background: rgba(255, 51, 51, 0.08);
+    }
+
+    .warning-row.warning-bullish {
+      color: #00dd77;
+      border-color: #006633;
+      background: rgba(0, 221, 119, 0.06);
     }
 
     .warning-row.warning-visible { opacity: 1; }
@@ -488,7 +528,14 @@
     </div>
   </div>
 
-  <div id="warnings-stack"></div>
+  <div id="warnings-panel">
+    <div class="warnings-col warnings-col-bearish" id="warnings-bearish">
+      <div class="warnings-col-label">Bearish</div>
+    </div>
+    <div class="warnings-col warnings-col-bullish" id="warnings-bullish">
+      <div class="warnings-col-label">Bullish</div>
+    </div>
+  </div>
 
   <div id="center-panel">
     <div id="clock-display" aria-live="off">--:--:--</div>
@@ -588,14 +635,39 @@
     spread_ok: 'dot-spread'
   };
 
+  const WARNING_BEARISH = new Set([
+    'topping_tail', 'doji_bull_run', 'momentum_exhaustion_up',
+    'tape_slowdown_bull_run', 'lost_9_ema', 'lost_20_ema',
+    'failed_resistance_breakout', 'failed_support_hold'
+  ]);
+  const WARNING_BULLISH = new Set([
+    'bottoming_tail', 'doji_bear_run', 'high_volume_buy', 'momentum_exhaustion_down',
+    'tape_slowdown_bear_run', 'above_9_ema', 'above_20_ema',
+    'resistance_breakout', 'held_support'
+  ]);
+
   const WARNING_TEXT = {
-    topping_tail: (t) => `⚠ Topping tail — 1m bar ${t}`,
-    doji: (t) => `⚠ Doji — 1m bar ${t}`,
-    high_volume_sell: (t) => `⚠ High Value Seller at ${t}`,
-    momentum_exhaustion: () => '⚠ Shrinking candles — momentum exhausting',
-    tape_slowdown: () => '⚠ Tape slowdown — volume contracting',
-    lost_9_ema: () => '⚠ Price below 9 EMA — Weak structure',
-    lost_20_ema: () => '⚠ Price below 20 EMA — Weak structure'
+    topping_tail: (t) => `⚠ Topping Tail — 1m bar ${t}`,
+    bottoming_tail: (t) => `⚠ Bottoming Tail — 1m bar ${t}`,
+    doji_bull_run: (t) => `⚠ Doji on Bullish Run — 1m bar ${t}`,
+    doji_bear_run: (t) => `⚠ Doji on Bearish Run — 1m bar ${t}`,
+    high_volume_buy: (t) => `⚠ Large Buy Volume at ${t}`,
+    momentum_exhaustion_up: () => '⚠ Shrinking candles on bullish run — momentum exhausting',
+    momentum_exhaustion_down: () => '⚠ Shrinking candles on bearish run — selling exhausting',
+    tape_slowdown_bull_run: () => '⚠ Tape slowdown after bullish run — consolidation / pause',
+    tape_slowdown_bear_run: () => '⚠ Tape slowdown after bearish run — selling may be drying up',
+    lost_9_ema: () => '⚠ Price below 9 EMA — weak structure',
+    lost_20_ema: () => '⚠ Price below 20 EMA — weak structure',
+    above_9_ema: () => '⚠ Price above 9 EMA — strong structure',
+    above_20_ema: () => '⚠ Price above 20 EMA — strong structure',
+    failed_resistance_breakout: (d) =>
+      `⚠ Failed Resistance Breakout${d ? ` — ${d}` : ''}`,
+    resistance_breakout: (d) =>
+      `⚠ Resistance Breakout${d ? ` — ${d}` : ''}`,
+    failed_support_hold: (d) =>
+      `⚠ Failed Support Hold${d ? ` — ${d}` : ''}`,
+    held_support: (d) =>
+      `⚠ Held Support${d ? ` — ${d}` : ''}`
   };
 
   let symbol = '';
@@ -629,7 +701,17 @@
   const trafficLight = document.getElementById('traffic-light');
   const tlHeadline = document.getElementById('tl-headline');
   const tlSubtext = document.getElementById('tl-subtext');
-  const warningsStack = document.getElementById('warnings-stack');
+  const warningsBearish = document.getElementById('warnings-bearish');
+  const warningsBullish = document.getElementById('warnings-bullish');
+
+  function warningColumnFor(code) {
+    if (WARNING_BULLISH.has(code)) return warningsBullish;
+    return warningsBearish;
+  }
+
+  function warningRowClass(code) {
+    return WARNING_BULLISH.has(code) ? 'warning-bullish' : 'warning-bearish';
+  }
   const overlayEls = {
     waiting: document.getElementById('overlay-waiting'),
     stale: document.getElementById('overlay-stale'),
@@ -1154,10 +1236,14 @@
     return warningBars[code] || formatBarTimeEt();
   }
 
+  function warningDetail(code) {
+    return warningBars[code] || barTimeForWarning(code);
+  }
+
   function warningDisplayText(code) {
     const fn = WARNING_TEXT[code];
     if (!fn) return `⚠ ${code}`;
-    return fn(barTimeForWarning(code));
+    return fn(warningDetail(code));
   }
 
   function removeWarningEl(code) {
@@ -1167,9 +1253,10 @@
     warningState.delete(code);
   }
 
-  function trimWarningsToMax(max) {
-    while (warningsStack.children.length > max) {
-      const oldest = warningsStack.firstElementChild;
+  function trimColumnWarnings(colEl, max) {
+    const rows = [...colEl.querySelectorAll('.warning-row')];
+    while (rows.length > max) {
+      const oldest = rows.shift();
       if (!oldest) break;
       for (const [code, entry] of warningState) {
         if (entry.el === oldest) {
@@ -1186,20 +1273,23 @@
     warningBars = bars && typeof bars === 'object' ? bars : {};
 
     for (const code of incoming) {
+      const col = warningColumnFor(code);
       let entry = warningState.get(code);
       if (!entry) {
-        trimWarningsToMax(5);
+        trimColumnWarnings(col, 6);
         const el = document.createElement('div');
-        el.className = 'warning-row';
+        el.className = `warning-row ${warningRowClass(code)}`;
         el.textContent = warningDisplayText(code);
-        warningsStack.appendChild(el);
+        col.appendChild(el);
         requestAnimationFrame(() => el.classList.add('warning-visible'));
         entry = { el, missCount: 0 };
         warningState.set(code, entry);
       } else {
         entry.missCount = 0;
+        if (entry.el.parentNode !== col) col.appendChild(entry.el);
+        entry.el.className = `warning-row ${warningRowClass(code)}`;
         entry.el.textContent = WARNING_TEXT[code]
-          ? WARNING_TEXT[code](barTimeForWarning(code))
+          ? WARNING_TEXT[code](warningDetail(code))
           : `⚠ ${code}`;
         if (!entry.el.classList.contains('warning-visible')) {
           entry.el.classList.add('warning-visible');
@@ -1227,7 +1317,9 @@
   function clearWarnings() {
     warningState.clear();
     warningBars = {};
-    warningsStack.innerHTML = '';
+    for (const col of [warningsBearish, warningsBullish]) {
+      [...col.querySelectorAll('.warning-row')].forEach(el => el.remove());
+    }
   }
 
   function resetDisplay() {
