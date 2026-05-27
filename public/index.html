@@ -523,7 +523,12 @@
     </div>
     <div class="dot-cell dot-cell-setup" data-setup="momentum">
       <div class="dot" id="dot-momentum"></div>
-      <span class="dot-label">Front-side HH (~5m)</span>
+      <span class="dot-label">Front side</span>
+      <div class="dot-tip" role="tooltip"></div>
+    </div>
+    <div class="dot-cell dot-cell-setup" data-setup="giveback">
+      <div class="dot" id="dot-giveback"></div>
+      <span class="dot-label">Giveback</span>
       <div class="dot-tip" role="tooltip"></div>
     </div>
   </div>
@@ -865,10 +870,11 @@
   const ROW2_LABELS = {
     resistance: 'Resistance',
     support: 'Support',
-    momentum: 'Front-side HH'
+    momentum: 'Front side',
+    giveback: 'Giveback'
   };
 
-  function row2Issues(levelSignals, momentum) {
+  function row2Issues(levelSignals, momentum, giveback) {
     const issues = [];
     const r = levelSignals?.resistance;
     const s = levelSignals?.support;
@@ -878,13 +884,17 @@
     if (s?.state && s.state !== 'green') {
       issues.push(s.reason || `${ROW2_LABELS.support}: ${s.phase || s.state}`);
     }
-    if (momentum && momentum.parabolic_hh === false) {
-      issues.push('No parabolic HH (~5m)');
+    const fs = momentum?.front_side;
+    if (fs?.state && fs.state !== 'green') {
+      issues.push(fs.reason || `${ROW2_LABELS.momentum}: ${fs.phase || fs.state}`);
+    }
+    if (giveback?.state && giveback.state !== 'green') {
+      issues.push(giveback.reason || `${ROW2_LABELS.giveback}: ${giveback.phase || giveback.state}`);
     }
     return issues;
   }
 
-  function trafficLightSubtext(confirmed, frontSide, levelSignals, momentum, warningBars, context) {
+  function trafficLightSubtext(confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context) {
     if (confirmed === 'LOOK_FOR_SETUP') {
       return 'All 5 GO checks + setup row clear';
     }
@@ -893,7 +903,7 @@
       return lines.length ? lines.join('\n') : 'GO check failed';
     }
     if (confirmed === 'CAUTION') {
-      const row2 = row2Issues(levelSignals, momentum);
+      const row2 = row2Issues(levelSignals, momentum, giveback);
       if (row2.length) return row2.join(' · ');
       return 'Setup row not clear';
     }
@@ -906,7 +916,7 @@
     tlSubtext.textContent = '';
   }
 
-  function renderTrafficLight(confirmed, frontSide, levelSignals, momentum, warningBars, context) {
+  function renderTrafficLight(confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context) {
     const legacy = confirmed === 'IN_PLAY' ? 'LOOK_FOR_SETUP'
       : confirmed === 'BACK_SIDE' ? 'NO_ENTRY' : confirmed;
     const cls = {
@@ -922,7 +932,7 @@
     };
     tlHeadline.textContent = titles[legacy] || '—';
     tlSubtext.textContent = trafficLightSubtext(
-      legacy, frontSide, levelSignals, momentum, warningBars, context
+      legacy, frontSide, levelSignals, momentum, giveback, warningBars, context
     );
   }
 
@@ -950,10 +960,11 @@
     else if (state === 'red') el.classList.add('dot-fail');
   }
 
-  function renderSetupRow(levelSignals, momentum, hints) {
+  function renderSetupRow(levelSignals, momentum, giveback, hints) {
     const resEl = document.getElementById('dot-resistance');
     const supEl = document.getElementById('dot-support');
     const momEl = document.getElementById('dot-momentum');
+    const gbEl = document.getElementById('dot-giveback');
     if (resEl && levelSignals?.resistance) {
       applyTriStateDot(resEl, levelSignals.resistance.state);
       bindTip(
@@ -968,11 +979,18 @@
         levelSignals.support.reason || hints?.support
       );
     }
-    if (momEl && momentum) {
-      applyTriStateDot(momEl, momentum.parabolic_hh ? 'green' : 'red');
+    if (momEl && momentum?.front_side) {
+      applyTriStateDot(momEl, momentum.front_side.state);
       bindTip(
         document.querySelector('.dot-cell[data-setup="momentum"]'),
-        hints?.momentum || 'Parabolic higher highs (~5m)'
+        momentum.front_side.reason || hints?.momentum
+      );
+    }
+    if (gbEl && giveback) {
+      applyTriStateDot(gbEl, giveback.state);
+      bindTip(
+        document.querySelector('.dot-cell[data-setup="giveback"]'),
+        giveback.reason || hints?.giveback
       );
     }
   }
@@ -981,7 +999,7 @@
     for (const id of Object.values(DOT_IDS)) {
       document.getElementById(id).className = 'dot';
     }
-    for (const id of ['dot-resistance', 'dot-support', 'dot-momentum']) {
+    for (const id of ['dot-resistance', 'dot-support', 'dot-momentum', 'dot-giveback']) {
       const el = document.getElementById(id);
       if (el) el.className = 'dot';
     }
@@ -1499,6 +1517,7 @@
         data.front_side,
         data.level_signals,
         data.momentum,
+        data.giveback,
         data.warning_bars,
         data.context
       );
@@ -1506,10 +1525,12 @@
       renderSetupRow(
         data.level_signals,
         data.momentum,
+        data.giveback,
         {
           resistance: data.context?.calc_hints?.level_resistance,
           support: data.context?.calc_hints?.level_support,
-          momentum: data.context?.calc_hints?.momentum
+          momentum: data.context?.calc_hints?.momentum,
+          giveback: data.context?.calc_hints?.giveback
         }
       );
       syncWarnings(data.warnings, data.warning_bars);

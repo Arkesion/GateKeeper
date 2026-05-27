@@ -55,12 +55,23 @@ const HIGH_VOL_RATIO = 2.0;
 const HIGH_VOL_PRIOR_BARS = 8;
 /** HV sell GO check uses the same 8-minute window as warning messages. */
 const TAPE_SLOW_RATIO = 0.5;
-/** Front-side momentum: higher-highs ladder in ~5 completed 1m bars (not a GO veto). */
-const MOMENTUM_HH_LOOKBACK = 5;
-const MOMENTUM_HH_MIN_STEPS = 3;
-const LEVEL_NEAR_USD = 0.10;
+/** Row 2 level bands: 3¢ active test at level; 10¢ near/approach/clear. */
+const LEVEL_TEST_BAND_USD = 0.03;
+const LEVEL_NEAR_BAND_USD = 0.10;
 const LEVEL_BREAK_USD = 0.02;
 const LEVEL_BREAK_LOOKBACK_BARS = 5;
+/** Front-side structure (row 2, not a GO veto). */
+const FRONT_SIDE_LOOKBACK_BARS = 12;
+const FRONT_SIDE_MIN_GREEN_BARS = 2;
+const FRONT_SIDE_SMALL_BODY_RATIO = 0.35;
+const FRONT_SIDE_REVERSAL_BODY_RATIO = 0.5;
+const FRONT_SIDE_MIN_HOLD_PCT = 0.40;
+const FRONT_SIDE_NEAR_PEAK_PCT = 0.25;
+/** Green-run giveback vs move size (row 2). */
+const GIVEBACK_MIN_GREEN_BARS = 2;
+const GIVEBACK_MOVE_MIN_USD = 0.05;
+const GIVEBACK_WARN_RATIO = 0.30;
+const GIVEBACK_FAIL_RATIO = 0.50;
 /** Max NBBO spread (ask − bid) for row 1 GO. */
 const MAX_BID_ASK_SPREAD_USD = 0.10;
 
@@ -2121,30 +2132,256 @@ function addTimedWarning(codes, bars, code, barList, now) {
   bars[code] = label;
 }
 
+function barBodyRatio(bar) {
+  if (!bar) return 0;
+  const range = bar.high - bar.low;
+  if (range <= 0) return 0;
+  return Math.abs(bar.close - bar.open) / range;
+}
+
+function barBodySize(bar) {
+  if (!bar) return 0;
+  return Math.abs(bar.close - bar.open);
+}
+
+/** Trailing consecutive bullish 1m bars at end of series. */
+function findTrailingBullishRun(bars, minLen = FRONT_SIDE_MIN_GREEN_BARS) {
+  const sorted = sortCandles(bars);
+  const run = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (isBullishBar(sorted[i])) run.unshift(sorted[i]);
+    else break;
+  }
+  return run.length >= minLen ? run : null;
+}
+
+/** Longest consecutive green run in window (for structure after small pullbacks). */
+function findLongestBullishRunInWindow(bars, minLen = FRONT_SIDE_MIN_GREEN_BARS) {
+  const sorted = sortCandles(bars);
+  let best = null;
+  let i = 0;
+  while (i < sorted.length) {
+    if (!isBullishBar(sorted[i])) {
+      i++;
+      continue;
+    }
+    const run = [];
+    while (i < sorted.length && isBullishBar(sorted[i])) {
+      run.push(sorted[i]);
+      i++;
+    }
+    if (run.length >= minLen && (!best || run.length > best.length)) best = run;
+  }
+  return best;
+}
+
 /**
- * Front-side HH (~5×1m): ladder of higher highs on today's ETH 1m series (no gap trim).
- * Includes the live forming bar so parabolic moves register before the minute closes.
+ * Recent green run for front-side: skip up to 2 small bearish bars at the end, then
+ * trailing greens; else longest green chain in the lookback window.
  */
-function computeParabolicMomentum(candles1m) {
-  const recent = sortCandles(candles1m).slice(-MOMENTUM_HH_LOOKBACK);
+function findRecentBullishRunForFrontSide(bars) {
+  const sorted = sortCandles(bars);
+  let end = sorted.length;
+  let skipped = 0;
+  while (end > 0 && skipped < 2) {
+    const b = sorted[end - 1];
+    if (isBearishBar(b) && barBodyRatio(b) < FRONT_SIDE_SMALL_BODY_RATIO) {
+      end--;
+      skipped++;
+    } else {
+      break;
+    }
+  }
+  const trailing = findTrailingBullishRun(sorted.slice(0, end));
+  if (trailing) return trailing;
+  return findLongestBullishRunInWindow(sorted);
+}
+
+/** Green chain ending at last completed bar (forming bearish excluded). */
+function findTrailingBullishRunCompleted(completedBars) {
+  return findTrailingBullishRun(completedBars, GIVEBACK_MIN_GREEN_BARS);
+}
+
+function hasTwoConsecutiveLowerLows(bars, lookback = 4) {
+  const recent = sortCandles(bars).slice(-lookback);
   if (recent.length < 3) return false;
-
-  let hhSteps = 0;
+  let streak = 0;
   for (let i = 1; i < recent.length; i++) {
-    if (recent[i].high > recent[i - 1].high) hhSteps++;
+    if (recent[i].low < recent[i - 1].low) {
+      streak++;
+      if (streak >= 2) return true;
+    } else {
+      streak = 0;
+    }
   }
-  if (hhSteps >= MOMENTUM_HH_MIN_STEPS) return true;
+  return false;
+}
 
-  const last = recent[recent.length - 1];
-  const windowMax = Math.max(...recent.map(c => c.high).filter(Number.isFinite));
-  if (!Number.isFinite(last?.high) || last.high < windowMax - 1e-9) return false;
-
-  const tailPairs = Math.min(3, recent.length - 1);
-  let tailHh = 0;
-  for (let i = recent.length - tailPairs; i < recent.length; i++) {
-    if (recent[i].high > recent[i - 1].high) tailHh++;
+function hasLowerHighs(bars, count = 3) {
+  const recent = sortCandles(bars).slice(-count);
+  if (recent.length < 3) return false;
+  let steps = 0;
+  for (let i = 1; i < recent.length; i++) {
+    if (recent[i].high < recent[i - 1].high) steps++;
   }
-  return tailHh >= 2;
+  return steps >= 2;
+}
+
+function avgBullishBodySize(run) {
+  const bodies = run.filter(isBullishBar).map(barBodySize).filter(s => s > 0);
+  if (!bodies.length) return 0;
+  return bodies.reduce((a, b) => a + b, 0) / bodies.length;
+}
+
+/**
+ * Row 2 — buy-side structure: front side vs consolidation vs backside (not HH ladder).
+ */
+function computeFrontSideSignal(candles1m, price, ema9, ema20) {
+  const bars = sortCandles(candles1m).slice(-FRONT_SIDE_LOOKBACK_BARS);
+  const fail = (phase, reason) => ({
+    state: 'red', phase, reason
+  });
+  const warn = (phase, reason) => ({
+    state: 'yellow', phase, reason
+  });
+  const ok = (phase, reason) => ({
+    state: 'green', phase, reason
+  });
+
+  if (bars.length < 2) {
+    return fail('insufficient_bars', 'Need more 1m bars');
+  }
+
+  const run = findRecentBullishRunForFrontSide(bars);
+  if (!run) {
+    return fail('no_impulse', 'No recent buy-side run');
+  }
+
+  if (Number.isFinite(ema9) && price < ema9) {
+    return fail('below_ema9', 'Below 9 EMA — structure lost');
+  }
+
+  if (hasTwoConsecutiveLowerLows(bars)) {
+    return fail('backside_ll', 'Two consecutive lower lows');
+  }
+
+  const runHigh = Math.max(...run.map(b => b.high));
+  const runLow = Math.min(...run.map(b => b.low));
+  const runRange = runHigh - runLow;
+  const avgBullBody = avgBullishBodySize(run);
+
+  const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
+  const lastCompleted = completed.length ? completed[completed.length - 1] : null;
+  if (lastCompleted && isBearishBar(lastCompleted) && avgBullBody > 0) {
+    const lastBody = barBodySize(lastCompleted);
+    if (lastBody >= avgBullBody * FRONT_SIDE_REVERSAL_BODY_RATIO) {
+      return fail('reversal_bar', 'Large bearish bar after run');
+    }
+  }
+
+  if (Number.isFinite(runLow) && price < runLow) {
+    return fail('below_run_low', 'Price below green-run low');
+  }
+
+  const holdFloor = runRange > 0
+    ? runLow + runRange * FRONT_SIDE_MIN_HOLD_PCT
+    : runLow;
+  const lastTwo = bars.slice(-2);
+  const recentBearish = lastTwo.filter(isBearishBar);
+  const smallConsolidation = recentBearish.length > 0 &&
+    recentBearish.every(b => barBodyRatio(b) < FRONT_SIDE_SMALL_BODY_RATIO);
+
+  if (runRange > 0 && price >= holdFloor && smallConsolidation) {
+    return ok('consolidating', 'Small pullback — still on front side');
+  }
+
+  if (run.length >= 3 && runRange > 0 &&
+      price >= runHigh - runRange * FRONT_SIDE_NEAR_PEAK_PCT) {
+    return ok('trending', 'Front-side run near highs');
+  }
+
+  if (isBullishBar(bars[bars.length - 1]) && price >= holdFloor) {
+    return ok('front_side', 'Buy-side run intact');
+  }
+
+  if (hasLowerHighs(bars) && Number.isFinite(ema9) && price >= ema9) {
+    return warn('weakening', 'Lower highs — watch for backside');
+  }
+
+  const last5 = bars.slice(-5);
+  const bulls = last5.filter(isBullishBar).length;
+  const bears = last5.filter(isBearishBar).length;
+  if (bulls < 2 && bears >= 2) {
+    return warn('choppy', 'Choppy — no clear buy-side control');
+  }
+
+  if (price >= holdFloor) {
+    return warn('weakening', 'Pullback — still above run floor');
+  }
+
+  return fail('backside', 'Backside / lost front-side structure');
+}
+
+/**
+ * Row 2 — giveback from trailing green chain vs live price.
+ */
+function computeGivebackSignal(completedBars, price) {
+  const base = {
+    move_size: null,
+    pullback: null,
+    pct: null
+  };
+  const run = findTrailingBullishRunCompleted(completedBars);
+  if (!run) {
+    return {
+      ...base,
+      state: 'green',
+      phase: 'no_run',
+      reason: 'No recent green run'
+    };
+  }
+
+  const moveHigh = Math.max(...run.map(b => b.high).filter(Number.isFinite));
+  const moveLow = Math.min(...run.map(b => b.low).filter(Number.isFinite));
+  const moveSize = moveHigh - moveLow;
+  const pullback = moveHigh - price;
+  const pct = moveSize > 0 ? pullback / moveSize : 0;
+
+  base.move_size = round2(moveSize);
+  base.pullback = round2(Math.max(0, pullback));
+  base.pct = round2(pct * 100);
+
+  if (moveSize < GIVEBACK_MOVE_MIN_USD) {
+    return {
+      ...base,
+      state: 'green',
+      phase: 'move_too_small',
+      reason: 'Green run too small to score giveback'
+    };
+  }
+
+  if (pct > GIVEBACK_FAIL_RATIO) {
+    return {
+      ...base,
+      state: 'red',
+      phase: 'deep_giveback',
+      reason: `Gave back ${(pct * 100).toFixed(0)}% of green run (>${(GIVEBACK_FAIL_RATIO * 100).toFixed(0)}%)`
+    };
+  }
+  if (pct >= GIVEBACK_WARN_RATIO) {
+    return {
+      ...base,
+      state: 'yellow',
+      phase: 'moderate_giveback',
+      reason: `Gave back ${(pct * 100).toFixed(0)}% of green run (${(GIVEBACK_WARN_RATIO * 100).toFixed(0)}–${(GIVEBACK_FAIL_RATIO * 100).toFixed(0)}%)`
+    };
+  }
+  return {
+    ...base,
+    state: 'green',
+    phase: 'shallow_pullback',
+    reason: `Pullback ${(pct * 100).toFixed(0)}% of green run (<${(GIVEBACK_WARN_RATIO * 100).toFixed(0)}%)`
+  };
 }
 
 function computeWarnings(candles1m, completed1m, now = Date.now()) {
@@ -2220,11 +2457,15 @@ function computeWarnings(candles1m, completed1m, now = Date.now()) {
 }
 
 function barTestsResistance(bar, level) {
-  return bar && Number.isFinite(bar.high) && bar.high >= level - LEVEL_NEAR_USD;
+  if (!bar || !Number.isFinite(bar.high) || !Number.isFinite(level)) return false;
+  return bar.high >= level - LEVEL_TEST_BAND_USD &&
+    bar.high <= level + LEVEL_TEST_BAND_USD;
 }
 
 function barTestsSupport(bar, level) {
-  return bar && Number.isFinite(bar.low) && bar.low <= level + LEVEL_NEAR_USD;
+  if (!bar || !Number.isFinite(bar.low) || !Number.isFinite(level)) return false;
+  return bar.low <= level + LEVEL_TEST_BAND_USD &&
+    bar.low >= level - LEVEL_TEST_BAND_USD;
 }
 
 function crossedAboveRecently(completedBars, level) {
@@ -2277,7 +2518,7 @@ function computeResistanceSignal(price, keyUp, completedBars, formingBar) {
       distance: round2(price - level)
     };
   }
-  if (distBelow > LEVEL_NEAR_USD) {
+  if (distBelow > LEVEL_NEAR_BAND_USD) {
     return {
       state: 'green',
       phase: 'clear',
@@ -2288,8 +2529,9 @@ function computeResistanceSignal(price, keyUp, completedBars, formingBar) {
     };
   }
 
-  const nearResistance = distBelow >= 0 && distBelow <= LEVEL_NEAR_USD;
-  const testing = nearResistance && (barTestsResistance(formingBar, level) || barTestsResistance(last, level));
+  const inTestBand = distBelow >= 0 && distBelow <= LEVEL_TEST_BAND_USD;
+  const testing = inTestBand &&
+    (barTestsResistance(formingBar, level) || barTestsResistance(last, level));
 
   if (testing && last && Number.isFinite(last.close) && last.close < level) {
     return {
@@ -2311,7 +2553,8 @@ function computeResistanceSignal(price, keyUp, completedBars, formingBar) {
       distance: round2(distBelow)
     };
   }
-  if (nearResistance && distBelow > 0) {
+  const approaching = distBelow > LEVEL_TEST_BAND_USD && distBelow <= LEVEL_NEAR_BAND_USD;
+  if (approaching) {
     return {
       state: 'yellow',
       phase: 'approach',
@@ -2369,8 +2612,10 @@ function computeSupportSignal(price, keyDown, completedBars, formingBar) {
     };
   }
 
-  const nearSupport = distAbove >= 0 && distAbove <= LEVEL_NEAR_USD;
-  const testing = nearSupport && (barTestsSupport(formingBar, level) || barTestsSupport(last, level));
+  const inTestBand = distAbove >= 0 && distAbove <= LEVEL_TEST_BAND_USD;
+  const testing = inTestBand &&
+    (barTestsSupport(formingBar, level) || barTestsSupport(last, level));
+  const nearSupport = distAbove >= 0 && distAbove <= LEVEL_NEAR_BAND_USD;
 
   if (testing) {
     return {
@@ -2435,18 +2680,20 @@ function row1AllGreen(frontSide) {
   return frontSide && Object.values(frontSide).every(Boolean);
 }
 
-function row2AllGreen(levelSignals, momentum) {
+function row2AllGreen(levelSignals, momentum, giveback) {
   const r = levelSignals?.resistance;
   const s = levelSignals?.support;
   const resOk = r?.state === 'green' &&
     ['clear', 'broke_through', 'no_resistance_above'].includes(r.phase);
   const supOk = s?.state === 'green' && s.phase === 'near';
-  return resOk && supOk && momentum?.parabolic_hh === true;
+  const frontOk = momentum?.front_side?.state === 'green';
+  const gbOk = giveback?.state === 'green';
+  return resOk && supOk && frontOk && gbOk;
 }
 
-function trafficBanner(frontSide, levelSignals, momentum) {
+function trafficBanner(frontSide, levelSignals, momentum, giveback) {
   if (!row1AllGreen(frontSide)) return 'NO_ENTRY';
-  if (row2AllGreen(levelSignals, momentum)) return 'LOOK_FOR_SETUP';
+  if (row2AllGreen(levelSignals, momentum, giveback)) return 'LOOK_FOR_SETUP';
   return 'CAUTION';
 }
 
@@ -2509,7 +2756,7 @@ function keyLevelHintLines(title, price, chosen, alts, extra) {
 function buildCalcHints({
   price, prevClose, vwap, vwapAnchor, vwapPack,
   ema9_1m_value, ema20_1m_value, macd_histogram_value,
-  completed1m, candles1m, forming1m, recent4, recent4High, momentum,
+  completed1m, candles1m, forming1m, recent4, recent4High, momentum, giveback,
   rvolDaily, todayVol, avg14Vol, front_side, macdBarCount,
   keyLevels, level_signals, quote, now = Date.now()
 }) {
@@ -2517,21 +2764,35 @@ function buildCalcHints({
   const spread = quoteBidAskSpread(quote);
   const barLine = c => `${formatEtHm(c.datetime)} H=${c.high.toFixed(2)} L=${c.low.toFixed(2)} C=${c.close.toFixed(2)} V=${c.volume}`;
 
+  const fs = momentum?.front_side;
   const momLines = [
-    `Front-side momentum (~${MOMENTUM_HH_LOOKBACK}m): parabolic higher-highs ladder.`,
-    `Need ${MOMENTUM_HH_MIN_STEPS}+ HH steps in last ${MOMENTUM_HH_LOOKBACK} bars, or at window high with 2+ recent HH.`,
-    'Uses today ETH 1m (no gap trim). Includes live forming bar. Not a GO veto.'
+    'Row 2 — Front side: buy-side structure (not HH ladder).',
+    'GREEN: run intact, small white candles OK, above 9 EMA.',
+    'RED: below 9 EMA, reversal bar, backside lower lows, or below run low.',
+    fs?.reason ? `→ ${fs.state?.toUpperCase()} (${fs.phase}): ${fs.reason}` : '→ —'
   ];
-  const momBars = sortCandles(candles1m || []).slice(-MOMENTUM_HH_LOOKBACK);
-  if (momBars.length >= 2) {
-    momBars.forEach((c, i) => {
-      const prev = i > 0 ? momBars[i - 1] : null;
-      const step = prev && c.high > prev.high ? 'HH↑' : '—';
-      momLines.push(`  ${barLine(c)} ${step}`);
-    });
-    momLines.push(`→ ${momentum?.parabolic_hh ? 'GREEN (front side of move)' : 'RED (no parabolic HH lately)'}`);
-  } else {
-    momLines.push(`Need ≥3 1m bars (have ${momBars.length}).`);
+  const momBars = sortCandles(candles1m || []).slice(-FRONT_SIDE_LOOKBACK_BARS);
+  const run = findRecentBullishRunForFrontSide(momBars);
+  if (run?.length) {
+    momLines.push(`Green run (${run.length} bars):`);
+    run.forEach(c => momLines.push(`  ${barLine(c)}`));
+    if (Number.isFinite(ema9_1m_value)) {
+      momLines.push(`Price $${price.toFixed(2)} vs 9 EMA $${ema9_1m_value.toFixed(2)}`);
+    }
+  }
+
+  const gbLines = [
+    'Row 2 — Giveback: pullback from green-chain high vs chain range.',
+    `Yellow ${(GIVEBACK_WARN_RATIO * 100).toFixed(0)}–${(GIVEBACK_FAIL_RATIO * 100).toFixed(0)}%, red >${(GIVEBACK_FAIL_RATIO * 100).toFixed(0)}%.`
+  ];
+  if (giveback?.reason) {
+    gbLines.push(giveback.reason);
+    if (giveback.move_size != null) {
+      gbLines.push(
+        `Move $${giveback.move_size.toFixed(2)} · Pullback $${giveback.pullback?.toFixed(2) ?? '—'} · ${giveback.pct ?? '—'}%`
+      );
+    }
+    gbLines.push(`→ ${giveback.state?.toUpperCase()} (${giveback.phase})`);
   }
 
   return {
@@ -2619,16 +2880,17 @@ function buildCalcHints({
       ])
     },
     momentum: nl(momLines),
+    giveback: nl(gbLines),
     level_resistance: level_signals?.resistance
       ? nl([
-          'Row 2 — resistance (tri-state). Uses KEY LVL ↑ from context.',
+          'Row 2 — resistance. Testing within 3¢ at level; approach 3–10¢.',
           level_signals.resistance.reason,
           `Phase: ${level_signals.resistance.phase} · state: ${level_signals.resistance.state}`
         ])
       : '',
     level_support: level_signals?.support
       ? nl([
-          'Row 2 — support (tri-state). Uses KEY LVL ↓ from context.',
+          'Row 2 — support. Testing within 3¢ at level; near green 0–10¢ above.',
           level_signals.support.reason,
           `Phase: ${level_signals.support.phase} · state: ${level_signals.support.state}`
         ])
@@ -2745,9 +3007,11 @@ function computeStateFromCache(symbol) {
     no_hv_sell,
     spread_ok
   };
-  const momentum = {
-    parabolic_hh: computeParabolicMomentum(indicator1m)
-  };
+  const front_side_signal = computeFrontSideSignal(
+    indicator1m, price, ema9_1m_value, ema20_1m_value
+  );
+  const momentum = { front_side: front_side_signal };
+  const giveback = computeGivebackSignal(completedInd, price);
   const warningResult = computeWarnings(candles1mLive, completedInd, now);
 
   const rvolResult = calcDailyRvol14(session1m, dailyCandles, now);
@@ -2773,6 +3037,7 @@ function computeStateFromCache(symbol) {
     price, prevClose, vwap, vwapAnchor, vwapPack,
     ema9_1m_value, ema20_1m_value, macd_histogram_value,
     completed1m: completedInd, candles1m: indicator1m, forming1m, recent4, recent4High, momentum,
+    giveback,
     rvolDaily: rvol_daily,
     todayVol: rvolResult.todayVol,
     avg14Vol: rvolResult.avg14,
@@ -2787,9 +3052,10 @@ function computeStateFromCache(symbol) {
   return {
     status: 'ok',
     symbol,
-    traffic_light_raw: trafficBanner(front_side, level_signals, momentum),
+    traffic_light_raw: trafficBanner(front_side, level_signals, momentum, giveback),
     front_side,
     momentum,
+    giveback,
     level_signals,
     warnings: warningResult.codes,
     warning_bars: warningResult.bars,

@@ -13,7 +13,7 @@ It is **not** a scanner, setup classifier, or entry signal. It is a traffic-ligh
 | State | Meaning |
 |--------|---------|
 | **NO ENTRY** | Any Row 1 GO check failed |
-| **CAUTION** | Row 1 green; setup row (resistance / support / HH) not fully clear |
+| **CAUTION** | Row 1 green; setup row (4 lights) not fully clear |
 | **LOOK FOR SETUP** | Row 1 and Row 2 all green |
 
 Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY—only Row 1 failures do.
@@ -28,11 +28,12 @@ Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY—only Row 1 fai
 
 Failed checks show descriptive subtext (e.g. spread amount, high-volume bar time).
 
-### Row 2 — setup row
+### Row 2 — setup row (four lights)
 
-- **Resistance** — tri-state vs KEY LVL ↑
-- **Support** — tri-state vs KEY LVL ↓
-- **Front-side HH (~5m)** — parabolic higher-highs ladder (informational; not a GO veto)
+- **Resistance** — tri-state vs KEY LVL ↑ (testing within 3¢ at level; approach 3–10¢)
+- **Support** — tri-state vs KEY LVL ↓ (testing within 3¢; **near** green when 0–10¢ above and not testing)
+- **Front side** — buy-side structure (tolerates small white consolidation; not a GO veto)
+- **Giveback** — pullback from trailing green-run high vs chain range (green &lt;30%, yellow 30–50%, red &gt;50%)
 
 ### Warnings (two columns)
 
