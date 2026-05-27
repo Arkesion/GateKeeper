@@ -89,6 +89,7 @@
       text-align: center;
       line-height: 1.4;
       max-width: 90%;
+      white-space: pre-line;
     }
 
     /* ── Condition dots ── */
@@ -116,6 +117,7 @@
     }
 
     .dot.dot-ok { background: #00ff66; }
+    .dot.dot-warn { background: #ffaa00; }
     .dot.dot-fail { background: #ff3333; }
 
     .dot-label {
@@ -123,6 +125,20 @@
       color: #888;
       text-align: center;
       white-space: nowrap;
+    }
+
+    #setup-row {
+      display: flex;
+      justify-content: center;
+      gap: clamp(20px, 5vw, 48px);
+      flex-wrap: wrap;
+      width: min(90vw, 900px);
+      margin-top: 8px;
+    }
+
+    .dot-cell-setup .dot-label {
+      color: #aaa;
+      font-size: 11px;
     }
 
     /* ── Warnings ── */
@@ -146,13 +162,65 @@
     .warning-row.warning-visible { opacity: 1; }
     .warning-row.warning-exit { opacity: 0; }
 
+    /* ── Center: clock + trading status ── */
+    #center-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: min(90vw, 900px);
+      min-height: clamp(100px, 20vh, 260px);
+      gap: 14px;
+      padding: 12px 0 8px;
+    }
+
+    #clock-display {
+      font-size: clamp(52px, 14vw, 104px);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      transition: color 1s ease;
+    }
+
+    #clock-display.clock-flash-up { color: #00ff66; }
+    #clock-display.clock-flash-down { color: #ff3333; }
+
+    #stock-status {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #status-line {
+      font-size: clamp(16px, 2.5vw, 22px);
+      letter-spacing: 0.04em;
+    }
+
+    #status-line.status-open { color: #00ff66; }
+    #status-line.status-pre,
+    #status-line.status-ah { color: #ffaa00; }
+    #status-line.status-closed { color: #888; }
+    #status-line.status-halt { color: #ff3333; }
+
+    .status-detail {
+      font-size: 14px;
+      color: #aaa;
+      letter-spacing: 0.03em;
+    }
+
+    .status-detail[hidden] { display: none; }
+
     /* ── Context grid ── */
     #context-grid {
-      width: min(95vw, 960px);
+      width: min(95vw, 1100px);
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       grid-template-rows: auto auto auto auto;
-      gap: 4px 16px;
+      gap: 4px 12px;
       margin-top: auto;
       padding-top: 16px;
     }
@@ -171,10 +239,125 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .ctx-value.ctx-compact {
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
     .ctx-value.ctx-green { color: #00ff66; }
     .ctx-value.ctx-red { color: #ff3333; }
     .ctx-value.ctx-yellow { color: #ffaa00; }
     .ctx-value.ctx-blue { color: #66aaff; }
+
+    .ctx-tip-wrap {
+      position: relative;
+      cursor: help;
+      padding-bottom: 16px;
+    }
+
+    .ctx-tip-wrap .ctx-value {
+      padding-bottom: 0;
+    }
+
+    .ctx-tip {
+      display: none;
+      position: absolute;
+      z-index: 60;
+      bottom: calc(100% + 4px);
+      left: 0;
+      min-width: 220px;
+      max-width: min(90vw, 360px);
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      color: #ccc;
+      font-size: 11px;
+      line-height: 1.45;
+      text-align: left;
+      white-space: pre-wrap;
+      font-variant-numeric: tabular-nums;
+      pointer-events: none;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    }
+
+    .ctx-tip-wrap:hover .ctx-tip,
+    .dot-cell:hover .dot-tip {
+      display: block;
+    }
+
+    .dot-cell {
+      position: relative;
+      cursor: help;
+    }
+
+    .dot-tip {
+      display: none;
+      position: absolute;
+      z-index: 60;
+      top: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 200px;
+      max-width: min(90vw, 340px);
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      color: #ccc;
+      font-size: 11px;
+      line-height: 1.45;
+      text-align: left;
+      white-space: pre-wrap;
+      pointer-events: none;
+    }
+
+    #page-footer {
+      width: min(95vw, 960px);
+      margin-top: 4px;
+      text-align: center;
+    }
+
+    #api-stats {
+      font-size: 11px;
+      color: #666;
+      letter-spacing: 1px;
+    }
+
+    /* Collapsed by default — expand for planned features that need paid L2 / T&S data */
+    #data-roadmap {
+      margin-top: 6px;
+      font-size: 10px;
+      color: #3a3a3a;
+      text-align: left;
+      max-width: 520px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    #data-roadmap > summary {
+      cursor: pointer;
+      list-style: none;
+      text-align: center;
+      color: #333;
+      letter-spacing: 0.06em;
+      user-select: none;
+    }
+
+    #data-roadmap > summary::-webkit-details-marker { display: none; }
+
+    #data-roadmap:hover > summary,
+    #data-roadmap[open] > summary {
+      color: #555;
+    }
+
+    #data-roadmap[open] {
+      color: #666;
+    }
+
+    #data-roadmap p {
+      margin-top: 8px;
+      line-height: 1.5;
+      color: #666;
+    }
 
     /* ── Overlays ── */
     #overlay-layer {
@@ -260,45 +443,93 @@
   </div>
 
   <div id="dots-row">
-    <div class="dot-cell">
+    <div class="dot-cell" data-dot="emas">
       <div class="dot" id="dot-emas"></div>
       <span class="dot-label">9/20 EMA (1m)</span>
+      <div class="dot-tip" role="tooltip"></div>
     </div>
-    <div class="dot-cell">
+    <div class="dot-cell" data-dot="macd">
       <div class="dot" id="dot-macd"></div>
       <span class="dot-label">MACD (1m)</span>
+      <div class="dot-tip" role="tooltip"></div>
     </div>
-    <div class="dot-cell">
+    <div class="dot-cell" data-dot="vwap">
       <div class="dot" id="dot-vwap"></div>
       <span class="dot-label">VWAP</span>
+      <div class="dot-tip" role="tooltip"></div>
     </div>
-    <div class="dot-cell">
-      <div class="dot" id="dot-hh"></div>
-      <span class="dot-label">Higher Highs</span>
+    <div class="dot-cell" data-dot="no_hv_sell">
+      <div class="dot" id="dot-no-hv-sell"></div>
+      <span class="dot-label">No HV sell</span>
+      <div class="dot-tip" role="tooltip"></div>
+    </div>
+    <div class="dot-cell" data-dot="spread_ok">
+      <div class="dot" id="dot-spread"></div>
+      <span class="dot-label">Spread ≤10¢</span>
+      <div class="dot-tip" role="tooltip"></div>
+    </div>
+  </div>
+
+  <div id="setup-row">
+    <div class="dot-cell dot-cell-setup" data-setup="resistance">
+      <div class="dot" id="dot-resistance"></div>
+      <span class="dot-label">Resistance</span>
+      <div class="dot-tip" role="tooltip"></div>
+    </div>
+    <div class="dot-cell dot-cell-setup" data-setup="support">
+      <div class="dot" id="dot-support"></div>
+      <span class="dot-label">Support</span>
+      <div class="dot-tip" role="tooltip"></div>
+    </div>
+    <div class="dot-cell dot-cell-setup" data-setup="momentum">
+      <div class="dot" id="dot-momentum"></div>
+      <span class="dot-label">Front-side HH (~5m)</span>
+      <div class="dot-tip" role="tooltip"></div>
     </div>
   </div>
 
   <div id="warnings-stack"></div>
 
+  <div id="center-panel">
+    <div id="clock-display" aria-live="off">--:--:--</div>
+    <div id="stock-status">
+      <div id="status-line">Status: —</div>
+      <div id="status-halt-time" class="status-detail" hidden>Halt Time: —</div>
+      <div id="status-resume-time" class="status-detail" hidden>Resumption Time: —</div>
+    </div>
+  </div>
+
   <div id="context-grid">
     <div class="ctx-label">PRICE</div>
-    <div class="ctx-label">DAY CHG</div>
-    <div class="ctx-label">VWAP Δ</div>
-    <div class="ctx-label">RVOL</div>
-    <div class="ctx-value" id="ctx-price">—</div>
-    <div class="ctx-value" id="ctx-day-chg">—</div>
-    <div class="ctx-value" id="ctx-vwap-d">—</div>
-    <div class="ctx-value" id="ctx-rvol">—</div>
-
-    <div class="ctx-label">9 EMA (1m)</div>
-    <div class="ctx-label">20 EMA (1m)</div>
+    <div class="ctx-label">KEY LVL ↑</div>
+    <div class="ctx-label">9-EMA</div>
+    <div class="ctx-label">VWAP</div>
     <div class="ctx-label">MACD HIST</div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-price">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value ctx-compact" id="ctx-key-up">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-ema9">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-vwap">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-macd">—</div><div class="ctx-tip" role="tooltip"></div></div>
+
+    <div class="ctx-label">DAY CHG</div>
+    <div class="ctx-label">KEY LVL ↓</div>
+    <div class="ctx-label">20-EMA</div>
+    <div class="ctx-label">VWAP Δ</div>
     <div class="ctx-label">SESSION</div>
-    <div class="ctx-value" id="ctx-ema9">—</div>
-    <div class="ctx-value" id="ctx-ema20">—</div>
-    <div class="ctx-value" id="ctx-macd">—</div>
-    <div class="ctx-value" id="ctx-session">—</div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-day-chg">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value ctx-compact" id="ctx-key-down">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-ema20">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-vwap-d">—</div><div class="ctx-tip" role="tooltip"></div></div>
+    <div class="ctx-tip-wrap"><div class="ctx-value" id="ctx-session">—</div><div class="ctx-tip" role="tooltip"></div></div>
   </div>
+
+  <footer id="page-footer">
+    <div id="api-stats">Schwab —/min · poll 5s / 15s</div>
+    <details id="data-roadmap">
+      <summary>+ market data (not enabled)</summary>
+      <p>Gatekeeper today uses Schwab quote + 1m candles only. Features such as Level&nbsp;2 large seller/buyer walls, full spread depth, seller/buyer book ratio, market thickness, and true Time&nbsp;&amp;&nbsp;Sales tape speed would require a subscribed market-data feed (e.g. Nasdaq TotalView / L2). Not planned until you opt into that cost.</p>
+    </details>
+  </footer>
 </div>
 
 <div id="overlay-layer">
@@ -319,31 +550,52 @@
   <div class="overlay" id="overlay-rate" data-id="rate">
     <div class="overlay-title">RATE LIMITED — backing off</div>
   </div>
+  <div class="overlay" id="overlay-invalid" data-id="invalid">
+    <div class="overlay-title">UNKNOWN SYMBOL</div>
+    <div class="overlay-sub" id="overlay-invalid-sub"></div>
+  </div>
 </div>
 
 <script>
   const STORAGE_KEY = 'gatekeeper_last_symbol';
-  // Reads backend-cached state; Schwab fetches run on server timers (5s quote / 15s candles).
-  const STATE_POLL_MS = 5000;
+  // Reads backend-cached state; Schwab quote ~1s + 1m ~2s (see footer /api/health).
+  const STATE_POLL_MS = 1000;
   const HEALTH_POLL_MS = 30000;
   const STALE_MS = 10000;
   const DISCONNECT_MS = 60000;
 
   const CONDITION_LABELS = {
-    emas: '9/20 EMA cross (1m)',
-    macd: 'MACD histogram',
-    vwap: 'Price vs VWAP',
-    hh: 'Higher highs'
+    emas: '9 EMA above 20 EMA',
+    macd: 'MACD positive',
+    vwap: 'Price above VWAP',
+    no_hv_sell: 'No high-volume sell (8m)',
+    spread_ok: 'Spread ≤ $0.10'
   };
 
-  const DOT_IDS = { emas: 'dot-emas', macd: 'dot-macd', vwap: 'dot-vwap', hh: 'dot-hh' };
+  const FAIL_LABELS = {
+    emas: '9 EMA below 20 EMA',
+    macd: 'MACD negative',
+    vwap: 'Price below VWAP',
+    no_hv_sell: 'High-volume sell (8m)',
+    spread_ok: 'Spread > $0.10'
+  };
+
+  const DOT_IDS = {
+    emas: 'dot-emas',
+    macd: 'dot-macd',
+    vwap: 'dot-vwap',
+    no_hv_sell: 'dot-no-hv-sell',
+    spread_ok: 'dot-spread'
+  };
 
   const WARNING_TEXT = {
     topping_tail: (t) => `⚠ Topping tail — 1m bar ${t}`,
     doji: (t) => `⚠ Doji — 1m bar ${t}`,
+    high_volume_sell: (t) => `⚠ High Value Seller at ${t}`,
     momentum_exhaustion: () => '⚠ Shrinking candles — momentum exhausting',
     tape_slowdown: () => '⚠ Tape slowdown — volume contracting',
-    lost_20_ema: () => '⚠ Lost 20 EMA on 1-min — back side forming'
+    lost_9_ema: () => '⚠ Price below 9 EMA — Weak structure',
+    lost_20_ema: () => '⚠ Price below 20 EMA — Weak structure'
   };
 
   let symbol = '';
@@ -355,10 +607,23 @@
   let hasReceivedOk = false;
   let waitingForData = true;
   let insufficientMissing = [];
+  let insufficientDetail = null;
   let healthData = { authenticated: true, rate_limit_status: 'ok' };
   let stateAuthFailed = false;
+  let unknownSymbol = false;
+  let clockTimer = null;
+  let ctxSnapshot = null;
+  let lastClockSecond = -1;
+  let lastFlashedMinuteSlot = null;
+  let priceAtSecond59 = null;
+  let lastKnownPrice = null;
+
+  const clockEl = () => document.getElementById('clock-display');
+  const NY_TZ = 'America/New_York';
+  let symbolSuggestion = null;
   let activeOverlayId = null;
   const warningState = new Map();
+  let warningBars = {};
 
   const tickerInput = document.getElementById('ticker-input');
   const trafficLight = document.getElementById('traffic-light');
@@ -370,7 +635,8 @@
     stale: document.getElementById('overlay-stale'),
     disconnected: document.getElementById('overlay-disconnected'),
     auth: document.getElementById('overlay-auth'),
-    rate: document.getElementById('overlay-rate')
+    rate: document.getElementById('overlay-rate'),
+    invalid: document.getElementById('overlay-invalid')
   };
 
   function formatBarTimeEt() {
@@ -407,8 +673,24 @@
 
   function formatMacdHist(n) {
     if (n == null || !Number.isFinite(n)) return '—';
-    const sign = n >= 0 ? '+' : '';
-    return sign + String(n);
+    const sign = n >= 0 ? '+' : '-';
+    return `${sign}${Math.abs(n).toFixed(8)}`;
+  }
+
+  function formatKeyLevel(level) {
+    if (!level || !Number.isFinite(level.price)) return '—';
+    const label = level.kind_label || '';
+    return label ? `$${level.price.toFixed(2)} · ${label}` : `$${level.price.toFixed(2)}`;
+  }
+
+  function colorKeyLevelUp(price, level) {
+    if (!Number.isFinite(price) || !level?.price) return 'ctx-yellow';
+    return level.price - price < price * 0.02 ? 'ctx-red' : 'ctx-yellow';
+  }
+
+  function colorKeyLevelDown(price, level) {
+    if (!Number.isFinite(price) || !level?.price) return 'ctx-yellow';
+    return price - level.price < price * 0.02 ? 'ctx-green' : 'ctx-yellow';
   }
 
   const CTX_COLOR_CLASSES = ['ctx-green', 'ctx-red', 'ctx-yellow', 'ctx-blue'];
@@ -455,10 +737,10 @@
   function colorSession(session) {
     if (!session) return null;
     switch (session) {
-      case 'RTH': return 'ctx-green';
-      case 'PRE': return 'ctx-yellow';
-      case 'AH': return 'ctx-blue';
-      case 'CLOSED': return 'ctx-red';
+      case 'Market Open': return 'ctx-green';
+      case 'Pre-Market': return 'ctx-yellow';
+      case 'After Hours': return 'ctx-blue';
+      case 'Closed': return 'ctx-red';
       default: return null;
     }
   }
@@ -467,22 +749,71 @@
     if (!frontSide) return [];
     return Object.entries(frontSide)
       .filter(([, v]) => !v)
-      .map(([k]) => CONDITION_LABELS[k]);
+      .map(([k]) => FAIL_LABELS[k] || CONDITION_LABELS[k]);
   }
 
-  function trafficLightSubtext(confirmed, frontSide) {
-    const met = frontSide
-      ? Object.values(frontSide).filter(Boolean).length
-      : 0;
-    const failing = failingConditions(frontSide);
-    const failStr = failing.join(', ');
+  /** Row 1 fail lines with spread $ and HV bar time when available. */
+  function noEntrySubtextLines(frontSide, warningBars, context) {
+    if (!frontSide) return [];
+    const lines = [];
+    const generic = [];
 
-    if (confirmed === 'IN_PLAY') return 'All 4 conditions met';
-    if (confirmed === 'CAUTION') {
-      return `${met}/4 conditions met — ${failStr || '—'}`;
+    for (const [key, ok] of Object.entries(frontSide)) {
+      if (ok) continue;
+      if (key === 'spread_ok') {
+        const s = context?.bid_ask_spread;
+        if (s != null && Number.isFinite(s)) {
+          lines.push(`Current Spread: $${s.toFixed(2)} > 10 cent maximum spread`);
+        } else {
+          lines.push('Current Spread: unavailable > 10 cent maximum spread');
+        }
+        continue;
+      }
+      if (key === 'no_hv_sell') {
+        const t = warningBars?.high_volume_sell;
+        if (t) lines.push(`High Volume at ${t}`);
+        else generic.push(FAIL_LABELS.no_hv_sell);
+        continue;
+      }
+      generic.push(FAIL_LABELS[key] || CONDITION_LABELS[key]);
     }
-    if (confirmed === 'BACK_SIDE') {
-      return `Walk away — ${failStr || '—'}`;
+    return [...lines, ...generic];
+  }
+
+  const ROW2_LABELS = {
+    resistance: 'Resistance',
+    support: 'Support',
+    momentum: 'Front-side HH'
+  };
+
+  function row2Issues(levelSignals, momentum) {
+    const issues = [];
+    const r = levelSignals?.resistance;
+    const s = levelSignals?.support;
+    if (r?.state && r.state !== 'green') {
+      issues.push(r.reason || `${ROW2_LABELS.resistance}: ${r.phase || r.state}`);
+    }
+    if (s?.state && s.state !== 'green') {
+      issues.push(s.reason || `${ROW2_LABELS.support}: ${s.phase || s.state}`);
+    }
+    if (momentum && momentum.parabolic_hh === false) {
+      issues.push('No parabolic HH (~5m)');
+    }
+    return issues;
+  }
+
+  function trafficLightSubtext(confirmed, frontSide, levelSignals, momentum, warningBars, context) {
+    if (confirmed === 'LOOK_FOR_SETUP') {
+      return 'All 5 GO checks + setup row clear';
+    }
+    if (confirmed === 'NO_ENTRY') {
+      const lines = noEntrySubtextLines(frontSide, warningBars, context);
+      return lines.length ? lines.join('\n') : 'GO check failed';
+    }
+    if (confirmed === 'CAUTION') {
+      const row2 = row2Issues(levelSignals, momentum);
+      if (row2.length) return row2.join(' · ');
+      return 'Setup row not clear';
     }
     return '';
   }
@@ -493,28 +824,74 @@
     tlSubtext.textContent = '';
   }
 
-  function renderTrafficLight(confirmed, frontSide) {
+  function renderTrafficLight(confirmed, frontSide, levelSignals, momentum, warningBars, context) {
+    const legacy = confirmed === 'IN_PLAY' ? 'LOOK_FOR_SETUP'
+      : confirmed === 'BACK_SIDE' ? 'NO_ENTRY' : confirmed;
     const cls = {
-      IN_PLAY: 'tl-in_play',
+      LOOK_FOR_SETUP: 'tl-in_play',
       CAUTION: 'tl-caution',
-      BACK_SIDE: 'tl-back_side'
-    }[confirmed] || '';
+      NO_ENTRY: 'tl-back_side'
+    }[legacy] || '';
     trafficLight.className = cls;
     const titles = {
-      IN_PLAY: 'IN PLAY',
+      LOOK_FOR_SETUP: 'LOOK FOR SETUP',
       CAUTION: 'CAUTION',
-      BACK_SIDE: 'BACK SIDE'
+      NO_ENTRY: 'NO ENTRY'
     };
-    tlHeadline.textContent = titles[confirmed] || '—';
-    tlSubtext.textContent = trafficLightSubtext(confirmed, frontSide);
+    tlHeadline.textContent = titles[legacy] || '—';
+    tlSubtext.textContent = trafficLightSubtext(
+      legacy, frontSide, levelSignals, momentum, warningBars, context
+    );
   }
 
-  function renderDots(frontSide) {
+  function bindTip(wrapEl, text) {
+    if (!wrapEl) return;
+    const tip = wrapEl.querySelector('.ctx-tip, .dot-tip');
+    if (tip) tip.textContent = text || '';
+  }
+
+  function renderDots(frontSide, dotHints) {
     for (const [key, id] of Object.entries(DOT_IDS)) {
       const el = document.getElementById(id);
       el.className = 'dot';
       if (!frontSide || frontSide[key] == null) continue;
       el.classList.add(frontSide[key] ? 'dot-ok' : 'dot-fail');
+      const cell = document.querySelector(`.dot-cell[data-dot="${key}"]`);
+      bindTip(cell, dotHints?.[key] || CONDITION_LABELS[key]);
+    }
+  }
+
+  function applyTriStateDot(el, state) {
+    el.className = 'dot';
+    if (state === 'green') el.classList.add('dot-ok');
+    else if (state === 'yellow') el.classList.add('dot-warn');
+    else if (state === 'red') el.classList.add('dot-fail');
+  }
+
+  function renderSetupRow(levelSignals, momentum, hints) {
+    const resEl = document.getElementById('dot-resistance');
+    const supEl = document.getElementById('dot-support');
+    const momEl = document.getElementById('dot-momentum');
+    if (resEl && levelSignals?.resistance) {
+      applyTriStateDot(resEl, levelSignals.resistance.state);
+      bindTip(
+        document.querySelector('.dot-cell[data-setup="resistance"]'),
+        levelSignals.resistance.reason || hints?.resistance
+      );
+    }
+    if (supEl && levelSignals?.support) {
+      applyTriStateDot(supEl, levelSignals.support.state);
+      bindTip(
+        document.querySelector('.dot-cell[data-setup="support"]'),
+        levelSignals.support.reason || hints?.support
+      );
+    }
+    if (momEl && momentum) {
+      applyTriStateDot(momEl, momentum.parabolic_hh ? 'green' : 'red');
+      bindTip(
+        document.querySelector('.dot-cell[data-setup="momentum"]'),
+        hints?.momentum || 'Parabolic higher highs (~5m)'
+      );
     }
   }
 
@@ -522,59 +899,265 @@
     for (const id of Object.values(DOT_IDS)) {
       document.getElementById(id).className = 'dot';
     }
+    for (const id of ['dot-resistance', 'dot-support', 'dot-momentum']) {
+      const el = document.getElementById(id);
+      if (el) el.className = 'dot';
+    }
+    for (const cell of document.querySelectorAll('.dot-cell')) {
+      bindTip(cell, '');
+    }
   }
 
   function renderContext(ctx) {
+    const h = ctx?.calc_hints;
     const elPrice = document.getElementById('ctx-price');
-    const elDayChg = document.getElementById('ctx-day-chg');
-    const elVwap = document.getElementById('ctx-vwap-d');
-    const elRvol = document.getElementById('ctx-rvol');
+    const elKeyUp = document.getElementById('ctx-key-up');
     const elEma9 = document.getElementById('ctx-ema9');
-    const elEma20 = document.getElementById('ctx-ema20');
+    const elVwap = document.getElementById('ctx-vwap');
     const elMacd = document.getElementById('ctx-macd');
+    const elDayChg = document.getElementById('ctx-day-chg');
+    const elKeyDown = document.getElementById('ctx-key-down');
+    const elEma20 = document.getElementById('ctx-ema20');
+    const elVwapD = document.getElementById('ctx-vwap-d');
     const elSession = document.getElementById('ctx-session');
 
     elPrice.textContent = formatMoney(ctx?.price);
     setCtxColor(elPrice, colorPrice(ctx?.price));
+    bindTip(elPrice.parentElement, h?.price);
 
-    elDayChg.textContent = formatSignedPct(ctx?.day_change_pct);
-    setCtxColor(elDayChg, colorDayChg(ctx?.day_change_pct));
-
-    elVwap.textContent = formatVwapDelta(ctx?.vwap_delta_dollars, ctx?.vwap_delta_pct);
-    setCtxColor(elVwap, colorVwapDelta(ctx?.vwap_delta_dollars));
-
-    elRvol.textContent = formatRvol(ctx?.rvol_1m);
-    setCtxColor(elRvol, colorRvol(ctx?.rvol_1m));
+    elKeyUp.textContent = formatKeyLevel(ctx?.key_level_up);
+    setCtxColor(elKeyUp, colorKeyLevelUp(ctx?.price, ctx?.key_level_up));
+    bindTip(elKeyUp.parentElement, h?.key_level_up);
 
     const emaColor = colorEmas(ctx?.ema9_1m_value, ctx?.ema20_1m_value);
     elEma9.textContent = formatMoney(ctx?.ema9_1m_value);
     setCtxColor(elEma9, emaColor);
-    elEma20.textContent = formatMoney(ctx?.ema20_1m_value);
-    setCtxColor(elEma20, emaColor);
+    bindTip(elEma9.parentElement, h?.ema9_1m);
+
+    const vwapColor = colorVwapDelta(ctx?.vwap_delta_dollars);
+    elVwap.textContent = formatMoney(ctx?.vwap_value);
+    setCtxColor(elVwap, vwapColor);
+    bindTip(elVwap.parentElement, h?.vwap_delta);
 
     elMacd.textContent = formatMacdHist(ctx?.macd_histogram_value);
     setCtxColor(elMacd, colorMacd(ctx?.macd_histogram_value));
+    bindTip(elMacd.parentElement, h?.macd_histogram);
+
+    elDayChg.textContent = formatSignedPct(ctx?.day_change_pct);
+    setCtxColor(elDayChg, colorDayChg(ctx?.day_change_pct));
+    bindTip(elDayChg.parentElement, h?.day_change_pct);
+
+    elKeyDown.textContent = formatKeyLevel(ctx?.key_level_down);
+    setCtxColor(elKeyDown, colorKeyLevelDown(ctx?.price, ctx?.key_level_down));
+    bindTip(elKeyDown.parentElement, h?.key_level_down);
+
+    elEma20.textContent = formatMoney(ctx?.ema20_1m_value);
+    setCtxColor(elEma20, emaColor);
+    bindTip(elEma20.parentElement, h?.ema20_1m);
+
+    elVwapD.textContent = formatVwapDelta(ctx?.vwap_delta_dollars, ctx?.vwap_delta_pct);
+    setCtxColor(elVwapD, vwapColor);
+    bindTip(elVwapD.parentElement, h?.vwap_delta);
 
     elSession.textContent = ctx?.market_session ?? '—';
     setCtxColor(elSession, colorSession(ctx?.market_session));
+    bindTip(elSession.parentElement, h?.session);
   }
 
   function clearContext() {
     for (const id of [
-      'ctx-price', 'ctx-day-chg', 'ctx-vwap-d', 'ctx-rvol',
-      'ctx-ema9', 'ctx-ema20', 'ctx-macd', 'ctx-session'
+      'ctx-price', 'ctx-key-up', 'ctx-ema9', 'ctx-vwap', 'ctx-macd',
+      'ctx-day-chg', 'ctx-key-down', 'ctx-ema20', 'ctx-vwap-d', 'ctx-session'
     ]) {
       const el = document.getElementById(id);
       el.textContent = '—';
       setCtxColor(el, null);
+      bindTip(el.parentElement, '');
+    }
+    renderStockStatus(null);
+    ctxSnapshot = null;
+    priceAtSecond59 = null;
+    lastKnownPrice = null;
+  }
+
+  function getEtClockParts(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: NY_TZ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      hourCycle: 'h23'
+    }).formatToParts(now);
+    const get = t => parts.find(p => p.type === t)?.value;
+    return {
+      y: get('year'),
+      mo: get('month'),
+      d: get('day'),
+      h: get('hour'),
+      mi: get('minute'),
+      s: get('second')
+    };
+  }
+
+  function formatClockFromParts(p) {
+    return `${p.h}:${p.mi}:${p.s}`;
+  }
+
+  function minuteSlotKey(p) {
+    return `${p.y}-${p.mo}-${p.d}T${p.h}:${p.mi}`;
+  }
+
+  /** ET time (HH:mm) of the 1m bar that just finished at this :00 tick. */
+  function justCompletedBarEtHm(p) {
+    let h = parseInt(p.h, 10);
+    let m = parseInt(p.mi, 10) - 1;
+    if (m < 0) {
+      m = 59;
+      h -= 1;
+      if (h < 0) h = 23;
+    }
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
+  /** 1m bar that just closed — only when server bar time matches the ended minute. */
+  function directionFromCompletedBar(ctx) {
+    if (!ctx) return null;
+    const endedHm = justCompletedBarEtHm(getEtClockParts());
+    if (ctx.last_completed_1m_et_hm !== endedHm) return null;
+    if (ctx.minute_close_direction === 'up' || ctx.minute_close_direction === 'down') {
+      return ctx.minute_close_direction;
+    }
+    const last = ctx.last_completed_1m_close;
+    const prev = ctx.prev_completed_1m_close;
+    if (Number.isFinite(last) && Number.isFinite(prev)) {
+      if (last > prev) return 'up';
+      if (last < prev) return 'down';
+    }
+    return null;
+  }
+
+  function directionFromPriceAtRollover() {
+    const cur = ctxSnapshot?.price ?? lastKnownPrice;
+    if (!Number.isFinite(cur) || !Number.isFinite(priceAtSecond59)) return null;
+    if (cur > priceAtSecond59) return 'up';
+    if (cur < priceAtSecond59) return 'down';
+    return null;
+  }
+
+  function prefetchState() {
+    if (!symbol) return;
+    fetch(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
+      .then(res => res.json())
+      .then(data => {
+        if (data?.status === 'ok' && data.context) ctxSnapshot = data.context;
+      })
+      .catch(() => {});
+  }
+
+  function tickClock() {
+    const now = new Date();
+    const p = getEtClockParts(now);
+    const el = clockEl();
+    if (el) el.textContent = formatClockFromParts(p);
+
+    const sec = parseInt(p.s, 10);
+    if (Number.isFinite(ctxSnapshot?.price)) lastKnownPrice = ctxSnapshot.price;
+    if (sec === 59) priceAtSecond59 = lastKnownPrice;
+    if ((sec === 58 || sec === 59) && lastClockSecond !== sec) prefetchState();
+    if (sec === 0 && lastClockSecond !== 0) {
+      onEtMinuteBoundary();
+    }
+    lastClockSecond = sec;
+  }
+
+  function flashClock(direction) {
+    const el = clockEl();
+    if (!el || (direction !== 'up' && direction !== 'down')) return;
+    el.classList.remove('clock-flash-up', 'clock-flash-down');
+    void el.offsetWidth;
+    el.classList.add(direction === 'up' ? 'clock-flash-up' : 'clock-flash-down');
+    window.setTimeout(() => {
+      el.classList.remove('clock-flash-up', 'clock-flash-down');
+    }, 1000);
+  }
+
+  function onEtMinuteBoundary() {
+    const slot = minuteSlotKey(getEtClockParts());
+    if (slot === lastFlashedMinuteSlot) return;
+    lastFlashedMinuteSlot = slot;
+
+    prefetchState();
+    const dir =
+      directionFromPriceAtRollover() ||
+      directionFromCompletedBar(ctxSnapshot);
+    if (dir) flashClock(dir);
+    else if (symbol) {
+      fetch(`/api/state/${encodeURIComponent(symbol)}`, { cache: 'no-store' })
+        .then(res => res.json())
+        .then(data => {
+          if (data?.status !== 'ok' || !data.context) return;
+          ctxSnapshot = data.context;
+          const barDir = directionFromCompletedBar(data.context);
+          if (barDir) flashClock(barDir);
+        })
+        .catch(() => {});
     }
   }
 
+  function renderStockStatus(ts) {
+    const line = document.getElementById('status-line');
+    const haltEl = document.getElementById('status-halt-time');
+    const resumeEl = document.getElementById('status-resume-time');
+    if (!line) return;
+
+    line.className = '';
+    if (!ts?.status_line) {
+      line.textContent = 'Status: —';
+      haltEl.hidden = true;
+      resumeEl.hidden = true;
+      return;
+    }
+
+    line.textContent = ts.status_line;
+    const st = ts.status || 'open';
+    line.classList.add(`status-${st === 'halted' ? 'halt' : st}`);
+
+    if (st === 'halted') {
+      haltEl.hidden = false;
+      resumeEl.hidden = false;
+      const src = ts.halt_source === 'nasdaq' ? ' (Nasdaq)' : '';
+      haltEl.textContent = `Halt Time: ${ts.halt_time_et || '—'}${src}`;
+      if (ts.resumption_estimated && ts.resumption_time_et) {
+        resumeEl.textContent = `Est. Resumption (~5m LUDP): ${ts.resumption_time_et}`;
+      } else if (ts.resumption_time_et) {
+        resumeEl.textContent = `Resumption Time: ${ts.resumption_time_et}`;
+      } else {
+        resumeEl.textContent = 'Resumption Time: Pending';
+      }
+    } else {
+      haltEl.hidden = true;
+      resumeEl.hidden = true;
+    }
+  }
+
+  function startClock() {
+    tickClock();
+    if (clockTimer) clearInterval(clockTimer);
+    clockTimer = setInterval(tickClock, 1000);
+  }
+
+  function barTimeForWarning(code) {
+    return warningBars[code] || formatBarTimeEt();
+  }
+
   function warningDisplayText(code) {
-    const barTime = formatBarTimeEt();
     const fn = WARNING_TEXT[code];
     if (!fn) return `⚠ ${code}`;
-    return fn(barTime);
+    return fn(barTimeForWarning(code));
   }
 
   function removeWarningEl(code) {
@@ -598,14 +1181,14 @@
     }
   }
 
-  function syncWarnings(codes) {
+  function syncWarnings(codes, bars) {
     const incoming = new Set(codes || []);
-    const barTime = formatBarTimeEt();
+    warningBars = bars && typeof bars === 'object' ? bars : {};
 
     for (const code of incoming) {
       let entry = warningState.get(code);
       if (!entry) {
-        trimWarningsToMax(2);
+        trimWarningsToMax(5);
         const el = document.createElement('div');
         el.className = 'warning-row';
         el.textContent = warningDisplayText(code);
@@ -616,7 +1199,7 @@
       } else {
         entry.missCount = 0;
         entry.el.textContent = WARNING_TEXT[code]
-          ? WARNING_TEXT[code](barTime)
+          ? WARNING_TEXT[code](barTimeForWarning(code))
           : `⚠ ${code}`;
         if (!entry.el.classList.contains('warning-visible')) {
           entry.el.classList.add('warning-visible');
@@ -643,6 +1226,7 @@
 
   function clearWarnings() {
     warningState.clear();
+    warningBars = {};
     warningsStack.innerHTML = '';
   }
 
@@ -650,8 +1234,16 @@
     hasReceivedOk = false;
     waitingForData = true;
     insufficientMissing = [];
+    insufficientDetail = null;
     lastSuccessAt = null;
+    lastFlashedMinuteSlot = null;
+    lastClockSecond = -1;
+    priceAtSecond59 = null;
+    lastKnownPrice = null;
+    ctxSnapshot = null;
     stateAuthFailed = false;
+    unknownSymbol = false;
+    symbolSuggestion = null;
     setTrafficLightNeutral();
     clearDots();
     clearWarnings();
@@ -664,6 +1256,7 @@
     if (healthData.authenticated === false || stateAuthFailed) return 'auth';
     if (healthData.rate_limit_status === 'backing_off') return 'rate';
     if (!symbol) return null;
+    if (unknownSymbol) return 'invalid';
     if (waitingForData || !hasReceivedOk) return 'waiting';
 
     const now = Date.now();
@@ -684,9 +1277,7 @@
     if (nextId === activeOverlayId) {
       if (nextId === 'waiting') {
         const sub = document.getElementById('overlay-waiting-sub');
-        sub.textContent = insufficientMissing.length
-          ? insufficientMissing.join(', ')
-          : '';
+        sub.textContent = formatWaitingSub(insufficientMissing, insufficientDetail);
       }
       return;
     }
@@ -701,11 +1292,43 @@
       overlayEls[nextId].classList.add('overlay-active');
       if (nextId === 'waiting') {
         const sub = document.getElementById('overlay-waiting-sub');
-        sub.textContent = insufficientMissing.length
-          ? insufficientMissing.join(', ')
-          : '';
+        sub.textContent = formatWaitingSub(insufficientMissing, insufficientDetail);
       }
     }
+    if (nextId === 'invalid') {
+      const sub = document.getElementById('overlay-invalid-sub');
+      let msg = symbol ? `${symbol} is not a valid Schwab symbol.` : '';
+      if (symbolSuggestion) msg += ` Did you mean ${symbolSuggestion}?`;
+      sub.textContent = msg;
+    }
+  }
+
+  function formatWaitingSub(missing, detail) {
+    if (!missing?.length) return '';
+    if (missing.includes('initializing')) return 'Loading…';
+    if (missing.includes('1m_candles') && detail) {
+      const s = detail.session_bars;
+      const i = detail.indicator_bars;
+      const req = detail.required_indicator_bars ?? 26;
+      if (Number.isFinite(s) && Number.isFinite(i)) {
+        if (s < req && i >= req) {
+          return `1m_candles · ${s} session bars today (indicators ready)`;
+        }
+        return `1m_candles · ${s} session / ${i} indicator (need ${req} for MACD)`;
+      }
+    }
+    return missing.join(', ');
+  }
+
+  function renderApiStats(health) {
+    const el = document.getElementById('api-stats');
+    if (!el || !health) return;
+    const cpm = health.schwab_calls_per_min;
+    const pi = health.poll_intervals_ms;
+    const cpmStr = Number.isFinite(cpm) ? String(cpm) : '—';
+    const q = pi?.quote != null ? pi.quote / 1000 : 5;
+    const c = pi?.candles != null ? pi.candles / 1000 : 5;
+    el.textContent = `Schwab ${cpmStr}/min (limit ~120) · quote ${q}s · 1m ${c}s · hover cells for math`;
   }
 
   async function pollHealth() {
@@ -713,6 +1336,7 @@
       const res = await fetch('/api/health');
       if (!res.ok) return;
       healthData = await res.json();
+      renderApiStats(healthData);
       updateOverlays();
     } catch {
       /* keep last health */
@@ -741,9 +1365,22 @@
 
       stateAuthFailed = false;
 
+      if (data?.status === 'invalid_symbol') {
+        unknownSymbol = true;
+        symbolSuggestion = data.suggestion || null;
+        waitingForData = false;
+        hasReceivedOk = false;
+        updateOverlays();
+        return;
+      }
+
+      unknownSymbol = false;
+      symbolSuggestion = null;
+
       if (data?.status === 'insufficient_data') {
         waitingForData = true;
         insufficientMissing = data.missing || [];
+        insufficientDetail = data.detail || null;
         hasReceivedOk = false;
         updateOverlays();
         return;
@@ -761,13 +1398,32 @@
 
       waitingForData = false;
       insufficientMissing = [];
+      insufficientDetail = null;
       hasReceivedOk = true;
       lastSuccessAt = Date.now();
 
-      renderTrafficLight(data.traffic_light_confirmed, data.front_side);
-      renderDots(data.front_side);
-      syncWarnings(data.warnings);
+      renderTrafficLight(
+        data.traffic_light_confirmed,
+        data.front_side,
+        data.level_signals,
+        data.momentum,
+        data.warning_bars,
+        data.context
+      );
+      renderDots(data.front_side, data.context?.calc_hints?.dots);
+      renderSetupRow(
+        data.level_signals,
+        data.momentum,
+        {
+          resistance: data.context?.calc_hints?.level_resistance,
+          support: data.context?.calc_hints?.level_support,
+          momentum: data.context?.calc_hints?.momentum
+        }
+      );
+      syncWarnings(data.warnings, data.warning_bars);
       renderContext(data.context);
+      ctxSnapshot = data.context;
+      renderStockStatus(data.context?.trading_status);
       updateOverlays();
     } catch {
       updateOverlays();
@@ -827,6 +1483,7 @@
     pollHealth();
     healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
     overlayTimer = setInterval(updateOverlays, 1000);
+    startClock();
 
     if (symbol) {
       waitingForData = true;

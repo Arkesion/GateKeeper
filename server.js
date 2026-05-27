@@ -2,19 +2,26 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
 const https = require('https');
 
 const app = express();
 const PORT = 3000;
 
 // ── TOKEN PERSISTENCE ─────────────────────────────────────────
-const TOKEN_FILE = './tokens.json';
+/** Persist on Docker volume so deploy/rebuild does not wipe tokens. */
+const TOKEN_FILE = process.env.TOKEN_PATH || '/data/tokens.json';
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+const REFRESH_SUSPEND_MS = 15 * 60 * 1000;
+const PROACTIVE_REFRESH_CHECK_MS = 60 * 1000;
 
 let accessToken = null;
 let refreshToken = null;
 let tokenExpiry = null;
 
 let authenticated = false;
+let refreshTokenSuspendedUntil = 0;
+let proactiveRefreshTimer = null;
 let lastSuccessfulFetch = null;
 let rateLimitStatus = 'ok';
 let rateLimitBackoffStep = 0;
@@ -23,14 +30,57 @@ let rateLimitBackoffPromise = null;
 
 const stateCache = {};
 
-const QUOTE_POLL_MS = 5000;
-const CANDLE_POLL_MS = 15000;
+const QUOTE_POLL_MS = Number(process.env.QUOTE_POLL_MS) || 1000;
+const CANDLE_POLL_MS = Number(process.env.CANDLE_POLL_MS) || 2000;
+const DAILY_CACHE_MS = Number(process.env.DAILY_CACHE_MS) || 60000;
+const DAILY_RVOL_LOOKBACK = 14;
+/** 1m bars for MACD — longer history so EMA chain matches TOS chart (Schwab max 10 session days). */
+const INDICATOR_1M_CACHE_MS = Number(process.env.INDICATOR_1M_CACHE_MS) || 60000;
+const INDICATOR_1M_PERIOD = 10;
+/** MACD(12,26,9) ideal warmup; Schwab may return fewer 1m bars on thin premarket names. */
+const MACD_MIN_BARS = 26;
+const MACD_MIN_BARS_SPARSE = 20;
+/** Minimum today's session 1m bars for VWAP / higher-highs (not MACD warmup). */
+const SESSION_MIN_BARS = 4;
+const WARNING_LOOKBACK_BARS = 10;
+const TOPPING_TAIL_WICK_RATIO = 0.6;
+const DOJI_BODY_RATIO = 0.1;
+/** Bearish 1m bar volume vs prior bars + scan window (no L2 — tape proxy). */
+const HIGH_VOL_SELL_RATIO = 2.0;
+const HIGH_VOL_SELL_PRIOR_BARS = 8;
+const HIGH_VOL_SELL_LOOKBACK_BARS = 8;
+/** Front-side momentum: higher-highs ladder in ~5 completed 1m bars (not a GO veto). */
+const MOMENTUM_HH_LOOKBACK = 5;
+const MOMENTUM_HH_MIN_STEPS = 3;
+const LEVEL_NEAR_USD = 0.10;
+const LEVEL_BREAK_USD = 0.02;
+const LEVEL_BREAK_LOOKBACK_BARS = 5;
+/** Max NBBO spread (ask − bid) for row 1 GO. */
+const MAX_BID_ASK_SPREAD_USD = 0.10;
+
+/** Common typos → valid Schwab symbol (shown in UI). */
+const TICKER_SUGGESTIONS = {
+  APPL: 'AAPL',
+  GOOG: 'GOOGL',
+  BRK: 'BRK.B'
+};
 
 let activeSymbol = null;
 const refreshTimers = { quote: null, candles: null };
 const refreshInFlight = { quote: false, candles: false };
 const marketDataCache = {};
 const responseCache = {};
+/** Per-symbol halt tracking (Schwab securityStatus + transition times). */
+const haltTrackers = {};
+
+const NASDAQ_HALT_POLL_MS = Number(process.env.NASDAQ_HALT_POLL_MS) || 60000;
+const LUDP_PAUSE_MS = 5 * 60 * 1000;
+const NASDAQ_HALT_RPC_URL = 'https://www.nasdaqtrader.com/RPCHandler.axd';
+const nasdaqHaltsCache = { fetchedAt: 0, rows: [] };
+let nasdaqHaltsRefreshPromise = null;
+
+/** Rolling window of successful Schwab HTTP call timestamps (for /api/health). */
+const schwabCallTimestamps = [];
 
 const BACKOFF_MS = [5000, 10000, 20000];
 
@@ -52,13 +102,78 @@ function markFetchSuccess() {
   rateLimitBackoffStep = 0;
 }
 
+function recordSchwabCall() {
+  const now = Date.now();
+  schwabCallTimestamps.push(now);
+  const cutoff = now - 60000;
+  while (schwabCallTimestamps.length && schwabCallTimestamps[0] < cutoff) {
+    schwabCallTimestamps.shift();
+  }
+}
+
+function getSchwabCallsPerMinute() {
+  const cutoff = Date.now() - 60000;
+  return schwabCallTimestamps.filter(t => t >= cutoff).length;
+}
+
+function ensureTokenDir() {
+  const dir = path.dirname(TOKEN_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function migrateTokenFile() {
+  if (fs.existsSync(TOKEN_FILE)) return;
+  const legacyPaths = [
+    path.join(process.cwd(), 'tokens.json'),
+    '/app/tokens.json'
+  ];
+  for (const legacy of legacyPaths) {
+    if (legacy === TOKEN_FILE || !fs.existsSync(legacy)) continue;
+    try {
+      ensureTokenDir();
+      fs.copyFileSync(legacy, TOKEN_FILE);
+      console.log(`✅ Migrated tokens → ${TOKEN_FILE}`);
+      return;
+    } catch (e) {
+      console.warn(`Token migration from ${legacy} failed:`, e.message);
+    }
+  }
+}
+
 function saveTokens() {
   try {
-    fs.writeFileSync(TOKEN_FILE, JSON.stringify({ accessToken, refreshToken, tokenExpiry }));
-    console.log('💾 Tokens saved to disk');
+    ensureTokenDir();
+    const payload = JSON.stringify({ accessToken, refreshToken, tokenExpiry });
+    const tmp = `${TOKEN_FILE}.tmp`;
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, TOKEN_FILE);
+    console.log(`💾 Tokens saved (${TOKEN_FILE})`);
   } catch (e) {
     console.error('Token save failed:', e.message);
   }
+}
+
+function accessTokenStillValid() {
+  return Boolean(accessToken && tokenExpiry && Date.now() < tokenExpiry - TOKEN_REFRESH_BUFFER_MS);
+}
+
+function accessTokenNeedsRefresh() {
+  if (!accessToken || !tokenExpiry) return true;
+  return Date.now() >= tokenExpiry - TOKEN_REFRESH_BUFFER_MS;
+}
+
+function isInvalidGrantError(err) {
+  const data = err.response?.data;
+  const desc = typeof data?.error_description === 'string' ? data.error_description : '';
+  return err.response?.status === 400 && (
+    data?.error === 'unsupported_token_type' ||
+    desc.includes('invalid_grant') ||
+    desc.includes('Refresh token is invalid')
+  );
+}
+
+function suspendRefreshAttempts() {
+  refreshTokenSuspendedUntil = Date.now() + REFRESH_SUSPEND_MS;
 }
 
 function loadTokens() {
@@ -68,14 +183,34 @@ function loadTokens() {
       accessToken  = d.accessToken;
       refreshToken = d.refreshToken;
       tokenExpiry  = d.tokenExpiry;
-      console.log('✅ Tokens loaded from disk');
+      authenticated = accessTokenStillValid();
+      console.log(`✅ Tokens loaded (${TOKEN_FILE})`);
     }
   } catch (e) {
     console.error('Token load failed:', e.message);
   }
 }
 
-loadTokens();
+function bootstrapTokenStore() {
+  ensureTokenDir();
+  migrateTokenFile();
+  loadTokens();
+}
+
+function clearAuthFailedCache() {
+  for (const sym of Object.keys(responseCache)) {
+    if (responseCache[sym]?.status === 'auth_failed') delete responseCache[sym];
+  }
+}
+
+function markAuthenticated() {
+  authenticated = true;
+  clearAuthFailedCache();
+}
+
+bootstrapTokenStore();
+
+let tokenRefreshInFlight = null;
 
 // ── AUTH ──────────────────────────────────────────────────────
 const SCHWAB_AUTH_URL  = 'https://api.schwabapi.com/v1/oauth/authorize';
@@ -84,8 +219,16 @@ const MARKET_DATA_URL  = 'https://api.schwabapi.com/marketdata/v1';
 
 const clientId     = process.env.SCHWAB_CLIENT_ID;
 const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
-const redirectUri  = process.env.REDIRECT_URI;
+const publicUrl    = (process.env.PUBLIC_URL || 'https://gatekeeper.veilforge.org').replace(/\/$/, '');
+const redirectUri  = process.env.REDIRECT_URI || `${publicUrl}/callback`;
 const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+if (!redirectUri.includes('/callback')) {
+  console.warn('⚠️ REDIRECT_URI should end with /callback — Schwab OAuth will fail');
+}
+if (redirectUri.includes('127.0.0.1') && publicUrl.includes('veilforge')) {
+  console.error('⚠️ REDIRECT_URI points at 127.0.0.1 but PUBLIC_URL is production — fix .env');
+}
 
 function redirectToSchwabLogin(req, res) {
   const authUrl = `${SCHWAB_AUTH_URL}?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
@@ -106,9 +249,12 @@ app.get('/callback', async (req, res) => {
     accessToken  = response.data.access_token;
     refreshToken = response.data.refresh_token;
     tokenExpiry  = Date.now() + (response.data.expires_in * 1000);
+    refreshTokenSuspendedUntil = 0;
     saveTokens();
-    authenticated = true;
+    markAuthenticated();
+    startProactiveRefreshTimer();
     console.log('✅ Authenticated with Schwab');
+    if (activeSymbol) startSymbolRefresh(activeSymbol);
     res.send('<script>window.close();</script>Authenticated! You can close this window.');
   } catch (err) {
     console.error('Auth error:', err.response?.data || err.message);
@@ -117,34 +263,94 @@ app.get('/callback', async (req, res) => {
 });
 
 async function refreshAccessToken({ force = false } = {}) {
+  if (!refreshToken && !accessTokenStillValid()) {
+    authenticated = false;
+    return false;
+  }
+  if (!force && accessTokenStillValid()) {
+    markAuthenticated();
+    return true;
+  }
   if (!refreshToken) {
+    if (accessTokenStillValid()) {
+      markAuthenticated();
+      return true;
+    }
     authenticated = false;
     return false;
   }
-  if (!force && accessToken && tokenExpiry && Date.now() < tokenExpiry - 60000) {
-    return true;
-  }
-  try {
-    const response = await axios.post(SCHWAB_TOKEN_URL,
-      new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
-      { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-    accessToken = response.data.access_token;
-    if (response.data.refresh_token) refreshToken = response.data.refresh_token;
-    tokenExpiry = Date.now() + (response.data.expires_in * 1000);
-    saveTokens();
-    authenticated = true;
-    console.log('🔄 Token refreshed');
-    return true;
-  } catch (err) {
-    console.error('Token refresh failed:', err.response?.status, err.response?.data || err.message);
+  if (Date.now() < refreshTokenSuspendedUntil) {
+    if (accessTokenStillValid()) {
+      markAuthenticated();
+      return true;
+    }
     authenticated = false;
     return false;
   }
+
+  if (tokenRefreshInFlight) return tokenRefreshInFlight;
+
+  tokenRefreshInFlight = (async () => {
+    try {
+      const response = await axios.post(SCHWAB_TOKEN_URL,
+        new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+        { headers: { 'Authorization': `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+      accessToken = response.data.access_token;
+      if (response.data.refresh_token) refreshToken = response.data.refresh_token;
+      tokenExpiry = Date.now() + (response.data.expires_in * 1000);
+      refreshTokenSuspendedUntil = 0;
+      saveTokens();
+      markAuthenticated();
+      console.log('🔄 Token refreshed');
+      return true;
+    } catch (err) {
+      if (isInvalidGrantError(err)) {
+        console.error('Refresh token rejected — suspend refresh retries; re-login if access expires');
+        refreshToken = null;
+        suspendRefreshAttempts();
+        saveTokens();
+      } else {
+        console.error('Token refresh failed:', err.response?.status, err.response?.data || err.message);
+      }
+      if (accessTokenStillValid()) {
+        markAuthenticated();
+        return true;
+      }
+      authenticated = false;
+      return false;
+    } finally {
+      tokenRefreshInFlight = null;
+    }
+  })();
+
+  return tokenRefreshInFlight;
+}
+
+/** Single entry: use valid access token; refresh only when near expiry or forced. */
+async function ensureSchwabAuth({ forceRefresh = false } = {}) {
+  if (!forceRefresh && accessTokenStillValid()) {
+    markAuthenticated();
+    return true;
+  }
+  if (!forceRefresh && !accessTokenNeedsRefresh()) {
+    markAuthenticated();
+    return true;
+  }
+  return refreshAccessToken({ force: true });
+}
+
+function startProactiveRefreshTimer() {
+  if (proactiveRefreshTimer) return;
+  proactiveRefreshTimer = setInterval(() => {
+    if (!refreshToken || Date.now() < refreshTokenSuspendedUntil) return;
+    if (!accessTokenNeedsRefresh()) return;
+    refreshAccessToken({ force: true }).catch(() => {});
+  }, PROACTIVE_REFRESH_CHECK_MS);
 }
 
 async function probeSchwabAuth() {
-  if (!(await refreshAccessToken({ force: true }))) return false;
+  if (!(await ensureSchwabAuth())) return false;
   try {
     const res = await axios.get(`${MARKET_DATA_URL}/quotes`, {
       headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -199,11 +405,7 @@ async function schwabFetch(url, options = {}) {
     return { ok: false, status: 400, error: 'invalid_schwab_url' };
   }
 
-  if (!authenticated && !(await refreshAccessToken())) {
-    return { ok: false, status: 401, error: 'auth_failed' };
-  }
-
-  if (!(await refreshAccessToken())) {
+  if (!(await ensureSchwabAuth())) {
     return { ok: false, status: 401, error: 'auth_failed' };
   }
 
@@ -233,17 +435,20 @@ async function schwabFetch(url, options = {}) {
 
   if (res.status === 200) {
     markFetchSuccess();
+    recordSchwabCall();
     logSchwabOk();
     return { ok: true, status: 200, data: res.data };
   }
 
   if (res.status === 401) {
-    if (!(await refreshAccessToken({ force: true }))) {
+    refreshTokenSuspendedUntil = 0;
+    if (!(await ensureSchwabAuth({ forceRefresh: true }))) {
       return { ok: false, status: 401, error: 'auth_failed' };
     }
     res = await requestOnce();
     if (res.status === 200) {
       markFetchSuccess();
+      recordSchwabCall();
       logSchwabOk();
       return { ok: true, status: 200, data: res.data };
     }
@@ -256,6 +461,7 @@ async function schwabFetch(url, options = {}) {
     res = await requestOnce();
     if (res.status === 200) {
       markFetchSuccess();
+      recordSchwabCall();
       logSchwabOk();
       return { ok: true, status: 200, data: res.data };
     }
@@ -275,6 +481,20 @@ async function getQuote(symbol) {
   });
   if (!result.ok) throw schwabResultToError(result);
   return result.data[symbol]?.quote || null;
+}
+
+function quoteBidAskSpread(quote) {
+  if (!quote) return null;
+  const bid = quote.bidPrice ?? quote.bid ?? null;
+  const ask = quote.askPrice ?? quote.ask ?? null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || ask < bid) return null;
+  return ask - bid;
+}
+
+function isSpreadAcceptable(quote) {
+  const spread = quoteBidAskSpread(quote);
+  if (spread == null) return false;
+  return spread <= MAX_BID_ASK_SPREAD_USD;
 }
 
 async function getPriceHistory(symbol, periodType, period, frequencyType, frequency, opts = {}) {
@@ -321,6 +541,29 @@ function getEtHourMinute(ms) {
   };
 }
 
+function getEtSecond(ms) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: NY_TZ,
+    second: 'numeric',
+    hour12: false
+  }).formatToParts(new Date(ms));
+  return parseInt(parts.find(p => p.type === 'second').value, 10);
+}
+
+/** First few seconds of each ET minute: pull quote + 1m so :00 flash has fresh bar. */
+function triggerMinuteEdgeRefresh(symbol) {
+  if (!symbol) return;
+  const now = Date.now();
+  if (getEtSecond(now) > 3) return;
+  const { h, m } = getEtHourMinute(now);
+  const edgeKey = `${getEtDateString(now)}T${h}:${String(m).padStart(2, '0')}`;
+  if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
+  if (marketDataCache[symbol].minuteEdgeKey === edgeKey) return;
+  marketDataCache[symbol].minuteEdgeKey = edgeKey;
+  refreshQuote(symbol);
+  refreshCandles(symbol);
+}
+
 function utcFromEtDateTime(dateStr, hour, minute) {
   let lo = Date.parse(`${dateStr}T17:00:00.000Z`) - 36 * 60 * 60 * 1000;
   let hi = Date.parse(`${dateStr}T17:00:00.000Z`) + 36 * 60 * 60 * 1000;
@@ -347,12 +590,158 @@ const POST_CLOSE_ET = ETH_CLOSE_ET;
 
 function getEthDayBounds(now = Date.now()) {
   const today = getEtDateString(now);
+  return getEthDayBoundsForDay(today, now);
+}
+
+function getEthDayBoundsForDay(sessionDay, now = Date.now()) {
   return {
-    today,
-    ethStartMs: utcFromEtDateTime(today, 4, 0),
-    ethEndMs:   utcFromEtDateTime(today, 20, 0),
-    capEndMs:   Math.min(now, utcFromEtDateTime(today, 20, 0))
+    today: sessionDay,
+    ethStartMs: utcFromEtDateTime(sessionDay, 4, 0),
+    ethEndMs:   utcFromEtDateTime(sessionDay, 20, 0),
+    capEndMs:   Math.min(now, utcFromEtDateTime(sessionDay, 20, 0))
   };
+}
+
+function mergeCandleSources(...sources) {
+  const map = new Map();
+  for (const src of sources) {
+    if (!src?.length) continue;
+    for (const c of src) {
+      if (c?.datetime != null) map.set(c.datetime, c);
+    }
+  }
+  return sortCandles([...map.values()]);
+}
+
+/** ET session day: clock today if any bars match, else newest bar's ET date (Schwab skew). */
+function inferSessionDayFromCandles(candles, now = Date.now()) {
+  const todayStr = getEtDateString(now);
+  if (!candles?.length) return todayStr;
+  const sorted = sortCandles(candles);
+  const { ethStartMs, capEndMs } = getEthDayBounds(now);
+  const cap = Math.min(now, capEndMs);
+  const onClockToday = sorted.filter(c =>
+    getEtDateString(c.datetime) === todayStr &&
+    c.datetime >= ethStartMs &&
+    c.datetime <= cap
+  );
+  if (onClockToday.length > 0) return todayStr;
+  return getEtDateString(sorted[sorted.length - 1].datetime);
+}
+
+function filterSessionDayBars(candles, sessionDay, now = Date.now()) {
+  if (!candles?.length) return [];
+  const sorted = sortCandles(candles);
+  const { ethStartMs, capEndMs } = getEthDayBoundsForDay(sessionDay, now);
+  const cap = Math.min(now, capEndMs);
+  let bars = sorted.filter(c =>
+    getEtDateString(c.datetime) === sessionDay &&
+    c.datetime >= ethStartMs &&
+    c.datetime <= cap
+  );
+  if (bars.length < 26) {
+    bars = sorted.filter(c =>
+      getEtDateString(c.datetime) === sessionDay &&
+      c.datetime >= ethStartMs &&
+      c.datetime <= capEndMs
+    );
+  }
+  return bars;
+}
+
+/** Drop pre-gap regime on large gap-ups; never return the full mixed series. */
+function trimPreGapBars(bars, quote) {
+  if (!bars?.length || !quote?.closePrice || !quote?.lastPrice) return bars;
+  const prev = quote.closePrice;
+  const last = quote.lastPrice;
+  if (!Number.isFinite(prev) || prev <= 0 || last / prev < 1.2) return bars;
+
+  const floor = Math.max(prev * 1.35, last * 0.65);
+  const inRegime = bars.filter(c =>
+    (Number.isFinite(c.close) && c.close >= floor) ||
+    (Number.isFinite(c.high) && c.high >= floor)
+  );
+  let pick = inRegime.length >= MACD_MIN_BARS ? inRegime : null;
+
+  if (!pick) {
+    let gapIdx = -1;
+    let bestJump = 1.2;
+    for (let i = 1; i < bars.length; i++) {
+      const p = bars[i - 1].close;
+      const c = bars[i].close;
+      if (!Number.isFinite(p) || !Number.isFinite(c) || p <= 0 || p > prev * 1.12) continue;
+      const jump = c / p;
+      if (jump >= bestJump && c >= prev * 1.2) {
+        bestJump = jump;
+        gapIdx = i;
+      }
+    }
+    if (gapIdx >= 0) {
+      const fromGap = bars.slice(gapIdx);
+      if (fromGap.length >= 10) pick = fromGap;
+    }
+  }
+  if (!pick && inRegime.length >= 10) pick = inRegime;
+  if (!pick) {
+    const abovePrev = bars.filter(c =>
+      (Number.isFinite(c.close) && c.close >= prev * 1.2) ||
+      (Number.isFinite(c.high) && c.high >= prev * 1.2)
+    );
+    pick = abovePrev.length ? abovePrev : inRegime;
+  }
+  if (bars.length >= MACD_MIN_BARS && pick.length < MACD_MIN_BARS) return bars;
+  return pick;
+}
+
+/** @deprecated use trimPreGapBars */
+function filterGapUpSessionBars(bars, quote) {
+  return trimPreGapBars(bars, quote);
+}
+
+function buildSession1mBars(candleSources, quote, now = Date.now()) {
+  const merged = mergeCandleSources(...candleSources);
+  if (!merged.length) return [];
+
+  const sessionDay = inferSessionDayFromCandles(merged, now);
+  let bars = filterSessionDayBars(merged, sessionDay, now);
+
+  if (bars.length < 26) {
+    const tail = merged.slice(-Math.min(500, merged.length));
+    bars = filterSessionDayBars(tail, sessionDay, now);
+    if (bars.length < 26) bars = tail;
+    console.warn(
+      `[session] ${sessionDay}: ${bars.length} bars (merged=${merged.length}, clock=${getEtDateString(now)})`
+    );
+  }
+
+  bars = trimPreGapBars(bars, quote);
+  if (quote) bars = applyLiveQuoteToCandles(bars, quote);
+  return bars;
+}
+
+/** 1m series for EMA/MACD — today's 4AM–now ETH session (matches TOS 1D MACD; no gap trim). */
+function buildIndicator1mBars(candleSources, quote, now = Date.now()) {
+  const merged = mergeCandleSources(...candleSources);
+  if (!merged.length) return [];
+
+  const sessionDay = inferSessionDayFromCandles(merged, now);
+  let bars = filterSessionDayBars(merged, sessionDay, now);
+
+  if (bars.length < MACD_MIN_BARS) {
+    const tail = merged.slice(-Math.min(800, merged.length));
+    bars = filterSessionDayBars(tail, sessionDay, now);
+    if (bars.length < MACD_MIN_BARS) bars = tail;
+  }
+
+  if (quote) bars = applyLiveQuoteToCandles(bars, quote);
+  return bars;
+}
+
+/** Active session: today's ET date + 4AM→now window (excludes prior-day AH on gap names). */
+function getTodaySession1mBars(candles, now = Date.now()) {
+  if (!candles?.length) return [];
+  const sessionDay = inferSessionDayFromCandles(candles, now);
+  return filterSessionDayBars(candles, sessionDay, now);
 }
 
 function isGatekeeperOpen(now = Date.now()) {
@@ -479,31 +868,6 @@ function filterToMostRecentTradingDay(candles, filterCandle) {
   return sorted.filter(c => getEtDateString(c.datetime) === lastDay && filterCandle(c));
 }
 
-async function fetchSessionCandles(symbol, frequency, frequencyType, cfg, lookbackDays = 2) {
-  const endDate   = Date.now();
-  const startDate = Math.min(cfg.vwapStartMs, endDate - lookbackDays * 24 * 60 * 60 * 1000);
-  const raw = await getPriceHistory(symbol, 'day', Math.max(lookbackDays, 2), frequencyType, frequency, {
-    startDate,
-    endDate,
-    needExtendedHoursData: cfg.needExtendedHours
-  });
-  let candles = sortCandles(raw).filter(c => c.datetime >= cfg.vwapStartMs && cfg.filterCandle(c));
-  if (cfg.session === 'CLOSED' && candles.length) {
-    const lastDay = getEtDateString(candles[candles.length - 1].datetime);
-    candles = candles.filter(c => getEtDateString(c.datetime) === lastDay);
-  }
-  if (candles.length < 10) {
-    const wideDays = cfg.session === 'CLOSED' ? 10 : 5;
-    const wide = await getPriceHistory(symbol, 'day', wideDays, frequencyType, frequency, {
-      startDate: endDate - wideDays * 24 * 60 * 60 * 1000,
-      endDate,
-      needExtendedHoursData: true
-    });
-    candles = filterToMostRecentTradingDay(sortCandles(wide), cfg.filterCandle);
-  }
-  return candles;
-}
-
 function buildVwapPackFrom1m(candles1m, cfg) {
   const candles = sortCandles(candles1m).filter(
     c => c.datetime >= cfg.vwapStartMs && cfg.filterCandle(c)
@@ -520,44 +884,623 @@ function buildVwapPackFrom1m(candles1m, cfg) {
   };
 }
 
-function resolveVwapPackFrom1m(candles1m, pmCfg) {
-  let vwapPack = buildVwapPackFrom1m(candles1m, pmCfg);
-  let vwapAnchor = 'PM';
-  if (isVwapPartialEth(vwapPack.candles, pmCfg.vwapStartMs)) {
-    // Use last bar's session day — not calendar today (empty on holidays/weekends)
-    const refDay = getLastCandleEtDate(candles1m);
-    const rthStart = utcFromEtDateTime(refDay, 9, 30);
-    const refEndMs = utcFromEtDateTime(refDay, 20, 0);
-    vwapPack = buildVwapPackFrom1m(candles1m, {
-      session: pmCfg.session === 'CLOSED' ? 'CLOSED' : getMarketSession(),
-      tag: 'RTH',
-      needExtendedHours: true,
-      vwapStartMs: rthStart,
-      filterCandle: c =>
-        getEtDateString(c.datetime) === refDay &&
-        c.datetime >= rthStart &&
-        c.datetime <= refEndMs
-    });
-    vwapAnchor = 'RTH';
+/** VWAP config aligned to bars already scoped to the active session day. */
+function vwapCfgForSessionBars(candles1m, pmCfg, now = Date.now()) {
+  if (!candles1m?.length) return pmCfg;
+  const sessionDay = getLastCandleEtDate(candles1m);
+  const { ethStartMs, capEndMs } = getEthDayBoundsForDay(sessionDay, now);
+  const cap = Math.min(now, capEndMs);
+  return {
+    ...pmCfg,
+    vwapStartMs: ethStartMs,
+    filterCandle: c =>
+      getEtDateString(c.datetime) === sessionDay &&
+      c.datetime >= ethStartMs &&
+      c.datetime <= cap
+  };
+}
+
+function resolveVwapPackFrom1m(candles1m, pmCfg, now = Date.now()) {
+  const vwapPack = buildVwapPackFrom1m(candles1m, pmCfg);
+  // TOS VWAP (0,0,DAY) = cumulative from 4:00 AM ET through extended hours.
+  // partialEth only affects the display tag (first bar after 4:30), not a switch to RTH-only.
+  if (getEtMinutes(now) < RTH_OPEN_ET) {
+    return { vwapPack, vwapAnchor: 'ETH' };
   }
-  return { vwapPack, vwapAnchor };
+  return { vwapPack, vwapAnchor: 'PM' };
 }
 
-async function getSignal5mCandles(symbol, cfg = getSessionConfig()) {
-  const lookbackDays = cfg.session === 'CLOSED' ? 10 : 3;
-  const candles = await fetchSessionCandles(symbol, 5, 'minute', cfg, lookbackDays);
-  return { candles, session: cfg.session };
+/** Daily bars for 14-day average volume (cached per symbol). */
+async function getDailyCandles(symbol) {
+  return getPriceHistory(symbol, 'month', 2, 'daily', 1, {
+    needExtendedHoursData: false
+  });
 }
 
-// 1-min candles: 10 calendar days — must span weekends when session is CLOSED
-async function getSignal1mCandles(symbol) {
-  const endDate   = Date.now();
-  const startDate = endDate - 10 * 24 * 60 * 60 * 1000;
-  return getPriceHistory(symbol, 'day', 10, 'minute', 1, {
-    startDate,
-    endDate,
+/**
+ * Daily RVOL = today's cumulative volume (sum of today's 1m bars) ÷ avg daily volume of prior 14 sessions.
+ */
+function calcDailyRvol14(candles1m, dailyCandles, now = Date.now()) {
+  const sessionDay = candles1m?.length ? getLastCandleEtDate(candles1m) : getEtDateString(now);
+  const todayVol = sortCandles(candles1m)
+    .filter(c => getEtDateString(c.datetime) === sessionDay)
+    .reduce((s, c) => s + (Number.isFinite(c.volume) ? c.volume : 0), 0);
+
+  const priorDays = sortCandles(dailyCandles || [])
+    .filter(c => getEtDateString(c.datetime) !== sessionDay && Number.isFinite(c.volume) && c.volume > 0)
+    .slice(-DAILY_RVOL_LOOKBACK);
+
+  if (priorDays.length < DAILY_RVOL_LOOKBACK || todayVol <= 0) {
+    return { rvol: null, todayVol, avg14: null, priorDays };
+  }
+  const avg14 = priorDays.reduce((s, c) => s + c.volume, 0) / DAILY_RVOL_LOOKBACK;
+  return { rvol: todayVol / avg14, todayVol, avg14, priorDays };
+}
+
+const KEY_LEVEL_KIND_LABEL = {
+  whole: 'Whole Dollar',
+  half: 'Half Dollar',
+  pivot: 'Pivot',
+  pivot_high: 'Pivot',
+  pivot_low: 'Pivot',
+  session_hod: 'HOD',
+  session_lod: 'LOD',
+  premarket_high: 'Premarket High',
+  premarket_low: 'Premarket Low',
+  tested_high: 'Pivot',
+  tested_low: 'Pivot',
+  prior_hod: 'HOD',
+  prior_lod: 'LOD',
+  prev_close: 'Prev close',
+  ema9: '9 EMA',
+  vwap: 'VWAP'
+};
+
+const KEY_LEVEL_KIND_PRIORITY = {
+  premarket_high: 1,
+  premarket_low: 1,
+  session_hod: 2,
+  session_lod: 2,
+  pivot: 3,
+  pivot_high: 3,
+  pivot_low: 3,
+  tested_high: 4,
+  tested_low: 4,
+  whole: 5,
+  half: 5,
+  ema9: 6,
+  vwap: 6,
+  prior_hod: 7,
+  prior_lod: 7,
+  prev_close: 8
+};
+
+function collectPsychLevels(price, span = 4) {
+  const levels = [];
+  const base = Math.floor(price);
+  for (let d = base - span; d <= base + span + 1; d++) {
+    if (d > 0) levels.push({ price: d, kind: 'whole' });
+    const half = d + 0.5;
+    if (half > 0) levels.push({ price: half, kind: 'half' });
+  }
+  return levels;
+}
+
+/** Confirmed swing high/low; last bars use fewer right-side bars so fresh reversals count. */
+function findPivotHighs(bars, left = 3, right = 3) {
+  const pivots = [];
+  if (bars.length < left + 1) return pivots;
+  for (let i = left; i < bars.length; i++) {
+    const r = Math.min(right, bars.length - 1 - i);
+    if (i < left || r < 0) continue;
+    const h = bars[i].high;
+    if (!Number.isFinite(h)) continue;
+    let ok = true;
+    for (let j = i - left; j <= i + r; j++) {
+      if (j === i) continue;
+      if (bars[j].high > h) { ok = false; break; }
+    }
+    if (ok) {
+      pivots.push({ price: h, kind: 'pivot_high', barIndex: i, datetime: bars[i].datetime });
+    }
+  }
+  return pivots;
+}
+
+function findPivotLows(bars, left = 3, right = 3) {
+  const pivots = [];
+  if (bars.length < left + 1) return pivots;
+  for (let i = left; i < bars.length; i++) {
+    const r = Math.min(right, bars.length - 1 - i);
+    if (i < left || r < 0) continue;
+    const l = bars[i].low;
+    if (!Number.isFinite(l)) continue;
+    let ok = true;
+    for (let j = i - left; j <= i + r; j++) {
+      if (j === i) continue;
+      if (bars[j].low < l) { ok = false; break; }
+    }
+    if (ok) {
+      pivots.push({ price: l, kind: 'pivot_low', barIndex: i, datetime: bars[i].datetime });
+    }
+  }
+  return pivots;
+}
+
+function levelTolerance(price) {
+  return Math.max(0.03, price * 0.012);
+}
+
+function countResistanceTouches(bars, level, tol) {
+  let n = 0;
+  for (const c of bars) {
+    if (Number.isFinite(c.high) && c.high >= level - tol) n++;
+  }
+  return n;
+}
+
+function countSupportTouches(bars, level, tol) {
+  let n = 0;
+  for (const c of bars) {
+    if (Number.isFinite(c.low) && c.low <= level + tol) n++;
+  }
+  return n;
+}
+
+function countOpenCloseTouches(bars, level, tol) {
+  let n = 0;
+  for (const c of bars) {
+    if (Number.isFinite(c.open) && Math.abs(c.open - level) <= tol) n++;
+    else if (Number.isFinite(c.close) && Math.abs(c.close - level) <= tol) n++;
+  }
+  return n;
+}
+
+function isWholeDollarPrice(price) {
+  if (!Number.isFinite(price)) return false;
+  const frac = Math.abs(price - Math.round(price));
+  return frac < 0.02 || frac > 0.98;
+}
+
+function isHalfDollarPrice(price) {
+  if (!Number.isFinite(price)) return false;
+  const frac = price - Math.floor(price);
+  return Math.abs(frac - 0.5) < 0.02;
+}
+
+function getPremarketExtremes(bars, now = Date.now()) {
+  const sessionDay = getEtDateString(now);
+  const pm = bars.filter(c => {
+    if (getEtDateString(c.datetime) !== sessionDay) return false;
+    const mins = getEtMinutes(c.datetime);
+    return mins >= PRE_OPEN_ET && mins < RTH_OPEN_ET;
+  });
+  if (!pm.length) return { high: null, low: null };
+  const highs = pm.map(c => c.high).filter(Number.isFinite);
+  const lows = pm.map(c => c.low).filter(Number.isFinite);
+  return {
+    high: highs.length ? Math.max(...highs) : null,
+    low: lows.length ? Math.min(...lows) : null
+  };
+}
+
+/** Display kind for a selected level — never generic "Tested". */
+function annotateKeyLevel(candidate, bars, ctx, side) {
+  if (!candidate || !Number.isFinite(candidate.price)) return null;
+  const price = round2(candidate.price);
+  const tol = levelTolerance(price);
+  const touches = candidate.touches ??
+    (side === 'down'
+      ? countSupportTouches(bars, price, tol)
+      : countResistanceTouches(bars, price, tol));
+  const ocTouches = countOpenCloseTouches(bars, price, tol);
+
+  if (side !== 'down') {
+    if (ctx.pmHigh != null && Math.abs(price - ctx.pmHigh) <= tol) {
+      return { price: round2(ctx.pmHigh), kind: 'premarket_high', touches };
+    }
+    if (ctx.sessionHod != null && Math.abs(price - ctx.sessionHod) <= tol) {
+      return { price: round2(ctx.sessionHod), kind: 'session_hod', touches };
+    }
+  }
+  if (side !== 'up') {
+    if (ctx.pmLow != null && Math.abs(price - ctx.pmLow) <= tol) {
+      return { price: round2(ctx.pmLow), kind: 'premarket_low', touches };
+    }
+    if (ctx.sessionLod != null && Math.abs(price - ctx.sessionLod) <= tol) {
+      return { price: round2(ctx.sessionLod), kind: 'session_lod', touches };
+    }
+  }
+
+  if (isWholeDollarPrice(price)) {
+    return { price, kind: 'whole', touches };
+  }
+  if (isHalfDollarPrice(price)) {
+    return { price, kind: 'half', touches };
+  }
+
+  if (ocTouches >= 2 ||
+      candidate.kind === 'pivot' ||
+      candidate.kind === 'pivot_high' ||
+      candidate.kind === 'pivot_low' ||
+      candidate.kind === 'tested_high' ||
+      candidate.kind === 'tested_low') {
+    return { price, kind: 'pivot', touches: Math.max(ocTouches, touches || 0) };
+  }
+
+  if (candidate.kind && KEY_LEVEL_KIND_LABEL[candidate.kind]) {
+    const kind = candidate.kind.startsWith('pivot') ? 'pivot' : candidate.kind;
+    return { price, kind, touches };
+  }
+  return { price, kind: 'pivot', touches };
+}
+
+/** Bonus for half/whole $ and .x0 / .x5 handles (e.g. 1.50, 2.00, 1.70). */
+function psychLevelBonus(level) {
+  const frac = level - Math.floor(level);
+  if (frac <= 0.04 || frac >= 0.96) return 3;
+  if (Math.abs(frac - 0.5) <= 0.04) return 2;
+  const dime = Math.round(frac * 10) / 10;
+  if (Math.abs(frac - dime) <= 0.025 && (Math.abs(dime * 10 - Math.round(dime * 10)) < 0.01)) {
+    const cents = Math.round(dime * 100) % 10;
+    if (cents === 0 || cents === 5) return 2;
+  }
+  return 0;
+}
+
+/** Cluster highs into $0.05 buckets — repeated tests at/under a ceiling (e.g. 1.70). */
+function buildTouchResistanceClusters(bars, price, buf, lookback = 48) {
+  const tail = bars.slice(-Math.min(lookback, bars.length));
+  const step = 0.05;
+  const buckets = new Map();
+  for (const c of tail) {
+    if (!Number.isFinite(c.high) || c.high <= price + buf) continue;
+    const bucket = Math.round(c.high / step) * step;
+    const entry = buckets.get(bucket) || { highs: [] };
+    entry.highs.push(c.high);
+    buckets.set(bucket, entry);
+  }
+  return [...buckets.entries()]
+    .filter(([, v]) => v.highs.length >= 2)
+    .map(([bucket, v]) => ({
+      price: round2(v.highs.reduce((s, h) => s + h, 0) / v.highs.length),
+      kind: 'tested_high',
+      touches: v.highs.length
+    }));
+}
+
+function buildTouchSupportClusters(bars, price, buf, lookback = 48) {
+  const tail = bars.slice(-Math.min(lookback, bars.length));
+  const step = 0.05;
+  const buckets = new Map();
+  for (const c of tail) {
+    if (!Number.isFinite(c.low) || c.low >= price - buf) continue;
+    const bucket = Math.round(c.low / step) * step;
+    const entry = buckets.get(bucket) || { lows: [] };
+    entry.lows.push(c.low);
+    buckets.set(bucket, entry);
+  }
+  return [...buckets.entries()]
+    .filter(([, v]) => v.lows.length >= 2)
+    .map(([bucket, v]) => ({
+      price: round2(v.lows.reduce((s, l) => s + l, 0) / v.lows.length),
+      kind: 'tested_low',
+      touches: v.lows.length
+    }));
+}
+
+function scoreResistanceCandidate(candidate, bars, sessionHod) {
+  const tol = levelTolerance(candidate.price);
+  const touches = candidate.touches ?? countResistanceTouches(bars, candidate.price, tol);
+  const psych = psychLevelBonus(candidate.price);
+  const isHod = Number.isFinite(sessionHod) && Math.abs(candidate.price - sessionHod) <= tol;
+  let score = touches * 100 + psych * 15;
+  if (isHod && touches >= 2) score += 40;
+  if (isHod && touches === 1) score -= 50;
+  return { ...candidate, touches, score, isHod };
+}
+
+function finalizeResistancePick(pick, ctx, bars) {
+  if (!pick) return null;
+  return annotateKeyLevel(pick, bars, ctx, 'up');
+}
+
+function pickMostRecentPivot(pivots, price, buf, side) {
+  const filtered = pivots.filter(p => {
+    if (!Number.isFinite(p.price)) return false;
+    return side === 'up' ? p.price > price + buf : p.price < price - buf;
+  });
+  if (!filtered.length) return null;
+  filtered.sort((a, b) => (b.barIndex ?? 0) - (a.barIndex ?? 0));
+  return filtered[0];
+}
+
+function pickKeyLevelUp(price, unique, allBars, buf, ctx) {
+  const sessionHod = ctx.sessionHod;
+
+  const pool = [
+    ...buildTouchResistanceClusters(allBars, price, buf),
+    ...unique.filter(c =>
+      ['pivot_high', 'pivot', 'half', 'whole', 'session_hod', 'premarket_high'].includes(c.kind) &&
+      c.price > price + buf
+    )
+  ];
+  if (Number.isFinite(sessionHod) && sessionHod > price + buf) {
+    pool.push({ price: sessionHod, kind: 'session_hod' });
+  }
+  if (ctx.pmHigh != null && ctx.pmHigh > price + buf) {
+    pool.push({ price: ctx.pmHigh, kind: 'premarket_high' });
+  }
+
+  const recentPivot = pickMostRecentPivot(
+    unique.filter(c => c.kind === 'pivot_high' || c.kind === 'pivot'),
+    price, buf, 'up'
+  );
+  if (recentPivot) pool.push(recentPivot);
+
+  if (pool.length) {
+    const scored = pool.map(c => scoreResistanceCandidate(c, allBars, sessionHod));
+    const withMulti = scored.filter(s => s.touches >= 2);
+    const ranked = (withMulti.length ? withMulti : scored).sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.price - b.price;
+    });
+    const finalized = finalizeResistancePick(ranked[0], ctx, allBars);
+    if (finalized) return finalized;
+  }
+
+  const above = unique
+    .filter(c => c.price > price + buf)
+    .sort((a, b) => a.price - b.price);
+  return above[0] ? annotateKeyLevel(above[0], allBars, ctx, 'up') : null;
+}
+
+function pickKeyLevelDown(price, unique, allBars, buf, ctx) {
+  const sessionLod = ctx.sessionLod;
+
+  const pool = [
+    ...buildTouchSupportClusters(allBars, price, buf),
+    ...unique.filter(c =>
+      ['pivot_low', 'pivot', 'half', 'whole', 'session_lod', 'premarket_low'].includes(c.kind) &&
+      c.price < price - buf
+    )
+  ];
+  if (Number.isFinite(sessionLod) && sessionLod < price - buf) {
+    pool.push({ price: sessionLod, kind: 'session_lod' });
+  }
+  if (ctx.pmLow != null && ctx.pmLow < price - buf) {
+    pool.push({ price: ctx.pmLow, kind: 'premarket_low' });
+  }
+
+  const recentPivot = pickMostRecentPivot(
+    unique.filter(c => c.kind === 'pivot_low' || c.kind === 'pivot'),
+    price, buf, 'down'
+  );
+  if (recentPivot) pool.push(recentPivot);
+
+  if (pool.length) {
+    const scored = pool.map(c => {
+      const tol = levelTolerance(c.price);
+      const touches = c.touches ?? countSupportTouches(allBars, c.price, tol);
+      const psych = psychLevelBonus(c.price);
+      const isLod = Number.isFinite(sessionLod) && Math.abs(c.price - sessionLod) <= tol;
+      let score = touches * 100 + psych * 15;
+      if (isLod && touches >= 2) score += 40;
+      return { ...c, touches, score };
+    });
+    const withMulti = scored.filter(s => s.touches >= 2);
+    const ranked = (withMulti.length ? withMulti : scored).sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.price - a.price;
+    });
+    const pick = ranked[0];
+    if (pick) return annotateKeyLevel(pick, allBars, ctx, 'down');
+  }
+
+  const below = unique
+    .filter(c => c.price < price - buf)
+    .sort((a, b) => b.price - a.price);
+  return below[0] ? annotateKeyLevel(below[0], allBars, ctx, 'down') : null;
+}
+
+function dedupeKeyLevels(candidates, minDist) {
+  const sorted = [...candidates].sort((a, b) => a.price - b.price);
+  const out = [];
+  for (const c of sorted) {
+    const existing = out.find(o => Math.abs(o.price - c.price) <= minDist);
+    if (!existing) {
+      out.push({ ...c });
+      continue;
+    }
+    const pNew = KEY_LEVEL_KIND_PRIORITY[c.kind] ?? 99;
+    const pOld = KEY_LEVEL_KIND_PRIORITY[existing.kind] ?? 99;
+    if (pNew < pOld) Object.assign(existing, c);
+  }
+  return out;
+}
+
+function formatKeyLevelCandidate(c) {
+  const out = {
+    price: round2(c.price),
+    kind: c.kind,
+    kind_label: KEY_LEVEL_KIND_LABEL[c.kind] || c.kind
+  };
+  if (c.touches != null) out.touches = c.touches;
+  return out;
+}
+
+/**
+ * Nearest proven resistance (up) / support (down) from HOD/LOD, pivots, 9 EMA, VWAP, psych levels, prior session.
+ */
+function calcKeyLevels(sessionBars, dailyCandles, price, prevClose, ema9, vwap, now = Date.now()) {
+  if (!Number.isFinite(price) || price <= 0) {
+    return { key_level_up: null, key_level_down: null };
+  }
+
+  const candidates = [];
+  candidates.push(...collectPsychLevels(price));
+
+  if (Number.isFinite(prevClose) && prevClose > 0) {
+    candidates.push({ price: prevClose, kind: 'prev_close' });
+  }
+  if (Number.isFinite(ema9) && ema9 > 0) {
+    candidates.push({ price: ema9, kind: 'ema9' });
+  }
+  if (Number.isFinite(vwap) && vwap > 0) {
+    candidates.push({ price: vwap, kind: 'vwap' });
+  }
+
+  const allBars = sortCandles(sessionBars);
+  const completed = getCompleted1mBars(allBars);
+  const pivotBars = completed.length >= 7 ? completed : allBars;
+
+  const pmExt = getPremarketExtremes(allBars, now);
+  if (Number.isFinite(pmExt.high)) {
+    candidates.push({ price: pmExt.high, kind: 'premarket_high' });
+  }
+  if (Number.isFinite(pmExt.low)) {
+    candidates.push({ price: pmExt.low, kind: 'premarket_low' });
+  }
+
+  if (allBars.length) {
+    const hod = Math.max(...allBars.map(c => c.high).filter(Number.isFinite));
+    const lod = Math.min(...allBars.map(c => c.low).filter(Number.isFinite));
+    if (Number.isFinite(hod)) candidates.push({ price: hod, kind: 'session_hod' });
+    if (Number.isFinite(lod)) candidates.push({ price: lod, kind: 'session_lod' });
+  }
+  if (pivotBars.length >= 7) {
+    candidates.push(...findPivotHighs(pivotBars));
+    candidates.push(...findPivotLows(pivotBars));
+  }
+  const sessionDay = getEtDateString(now);
+  const priorDaily = sortCandles(dailyCandles || [])
+    .filter(c => getEtDateString(c.datetime) !== sessionDay);
+  if (priorDaily.length) {
+    const last = priorDaily[priorDaily.length - 1];
+    if (Number.isFinite(last.high)) candidates.push({ price: last.high, kind: 'prior_hod' });
+    if (Number.isFinite(last.low)) candidates.push({ price: last.low, kind: 'prior_lod' });
+  }
+
+  const minDist = Math.max(0.03, price * 0.008);
+  const unique = dedupeKeyLevels(candidates, minDist);
+  const buf = Math.max(0.01, price * 0.002);
+
+  const RESISTANCE_KINDS = new Set([
+    'tested_high', 'pivot_high', 'pivot', 'session_hod', 'premarket_high',
+    'prior_hod', 'ema9', 'vwap', 'whole', 'half', 'prev_close'
+  ]);
+  const SUPPORT_KINDS = new Set([
+    'tested_low', 'pivot_low', 'pivot', 'session_lod', 'premarket_low',
+    'prior_lod', 'ema9', 'vwap', 'whole', 'half', 'prev_close'
+  ]);
+
+  const sessionHod = allBars.length
+    ? Math.max(...allBars.map(c => c.high).filter(Number.isFinite))
+    : null;
+  const sessionLod = allBars.length
+    ? Math.min(...allBars.map(c => c.low).filter(Number.isFinite))
+    : null;
+  const levelCtx = {
+    sessionHod: Number.isFinite(sessionHod) ? sessionHod : null,
+    sessionLod: Number.isFinite(sessionLod) ? sessionLod : null,
+    pmHigh: pmExt.high,
+    pmLow: pmExt.low,
+    price
+  };
+
+  const upPick = pickKeyLevelUp(price, unique, allBars, buf, levelCtx);
+  const downPick = pickKeyLevelDown(price, unique, allBars, buf, levelCtx);
+
+  let key_level_session_hod = null;
+  if (Number.isFinite(sessionHod) && sessionHod > price + buf) {
+    const hodTol = levelTolerance(sessionHod);
+    const hodTouches = countResistanceTouches(allBars, sessionHod, hodTol);
+    const upPrice = upPick?.price;
+    if (!Number.isFinite(upPrice) || Math.abs(sessionHod - upPrice) > hodTol) {
+      key_level_session_hod = formatKeyLevelCandidate({
+        price: sessionHod,
+        kind: 'session_hod',
+        touches: hodTouches
+      });
+    }
+  }
+
+  const aboveAlts = unique
+    .filter(c => c.price > price + buf && RESISTANCE_KINDS.has(c.kind))
+    .sort((a, b) => (b.barIndex ?? 0) - (a.barIndex ?? 0) || a.price - b.price);
+  const belowAlts = unique
+    .filter(c => c.price < price - buf && SUPPORT_KINDS.has(c.kind))
+    .sort((a, b) => (b.barIndex ?? 0) - (a.barIndex ?? 0) || b.price - a.price);
+
+  return {
+    key_level_up: upPick ? formatKeyLevelCandidate(upPick) : null,
+    key_level_down: downPick ? formatKeyLevelCandidate(downPick) : null,
+    key_level_session_hod,
+    key_level_session_lod: null,
+    key_level_candidates_up: aboveAlts.slice(0, 5).map(formatKeyLevelCandidate),
+    key_level_candidates_down: belowAlts.slice(0, 5).map(formatKeyLevelCandidate)
+  };
+}
+
+/**
+ * Schwab periodType=day 1m can lag on gap/IPO names (last bar days old while quote is live).
+ * Use startDate/endDate for the active ETH session when the gate is open.
+ */
+function getSession1mFetchRange(now = Date.now()) {
+  const sessionDay = getEtDateString(now);
+  const { ethStartMs, capEndMs } = getEthDayBoundsForDay(sessionDay, now);
+  const endMs = isGatekeeperOpen(now) ? Math.min(now, capEndMs) : capEndMs;
+  return { startDate: ethStartMs, endDate: endMs };
+}
+
+async function getSession1mCandles(symbol, now = Date.now()) {
+  if (isGatekeeperOpen(now)) {
+    const { startDate, endDate } = getSession1mFetchRange(now);
+    const session = await getPriceHistory(symbol, null, null, 'minute', 1, {
+      needExtendedHoursData: true,
+      startDate,
+      endDate
+    });
+    if (session.length >= MACD_MIN_BARS) return session;
+    const extra = await getPriceHistory(symbol, 'day', 5, 'minute', 1, {
+      needExtendedHoursData: true
+    });
+    return mergeCandleSources(session, extra);
+  }
+  return getPriceHistory(symbol, 'day', 5, 'minute', 1, {
     needExtendedHoursData: true
   });
+}
+
+async function getSignal1mCandles(symbol, now = Date.now()) {
+  return getSession1mCandles(symbol, now);
+}
+
+/** Same session-range 1m as signal when open; period fallback when closed (cached ~60s). */
+async function getIndicator1mCandles(symbol, now = Date.now()) {
+  if (isGatekeeperOpen(now)) {
+    const session = await getSession1mCandles(symbol, now);
+    if (session.length >= MACD_MIN_BARS) return session;
+    const extra = await getPriceHistory(symbol, 'day', INDICATOR_1M_PERIOD, 'minute', 1, {
+      needExtendedHoursData: true
+    });
+    return mergeCandleSources(session, extra);
+  }
+  return getPriceHistory(symbol, 'day', INDICATOR_1M_PERIOD, 'minute', 1, {
+    needExtendedHoursData: true
+  });
+}
+
+function cacheInvalidSymbol(symbol) {
+  responseCache[symbol] = {
+    status: 'invalid_symbol',
+    symbol,
+    suggestion: TICKER_SUGGESTIONS[symbol] || null
+  };
+}
+
+function isQuoteValid(quote) {
+  return quote && Number.isFinite(quote.lastPrice);
 }
 
 function applyLiveQuoteToCandles(candles, quote, bucketMs = 60 * 1000) {
@@ -628,10 +1571,313 @@ function formatTimeEtIso(now = Date.now()) {
   return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}${offset}`;
 }
 
+/** User-facing session label for the context grid (not internal RTH/PRE codes). */
 function contextMarketSession(now = Date.now()) {
   const s = getMarketSession(now);
-  if (s === 'POST') return 'AH';
-  return s;
+  switch (s) {
+    case 'PRE': return 'Pre-Market';
+    case 'RTH': return 'Market Open';
+    case 'POST': return 'After Hours';
+    case 'CLOSED': return 'Closed';
+    default: return s;
+  }
+}
+
+function formatTimeEtHms(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: NY_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    hourCycle: 'h23'
+  }).formatToParts(new Date(ms));
+  const get = t => parts.find(p => p.type === t)?.value;
+  return `${get('hour')}:${get('minute')}:${get('second')}`;
+}
+
+function parseNasdaqEtDateTime(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const dm = dateStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!dm) return null;
+  const [, mo, day, yr] = dm;
+  const dateIso = `${yr}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const tm = timeStr.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+  if (!tm) return null;
+  const hour = parseInt(tm[1], 10);
+  const minute = parseInt(tm[2], 10);
+  const second = parseInt(tm[3], 10);
+  const frac = tm[4] ? parseInt(tm[4].padEnd(3, '0').slice(0, 3), 10) : 0;
+  const base = utcFromEtDateTime(dateIso, hour, minute);
+  if (!Number.isFinite(base)) return null;
+  return base + second * 1000 + frac;
+}
+
+function displayNasdaqEtTime(timeStr) {
+  if (!timeStr) return null;
+  const t = timeStr.trim();
+  const m = t.match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+  if (!m) return t;
+  const frac = m[4] ? `.${m[4].replace(/0+$/, '') || m[4]}` : '';
+  return `${String(parseInt(m[1], 10)).padStart(2, '0')}:${m[2]}:${m[3]}${frac}`;
+}
+
+function parseNasdaqHaltsHtml(html) {
+  if (!html || typeof html !== 'string') return [];
+  const rows = [];
+  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let isHeader = true;
+  let m;
+  while ((m = trRe.exec(html)) !== null) {
+    if (isHeader) {
+      isHeader = false;
+      continue;
+    }
+    const tds = [];
+    const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let td;
+    while ((td = tdRe.exec(m[1])) !== null) {
+      tds.push(td[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+    }
+    if (tds.length < 6) continue;
+    rows.push({
+      haltDate: tds[0],
+      haltTime: tds[1],
+      symbol: (tds[2] || '').toUpperCase(),
+      issueName: tds[3],
+      market: tds[4],
+      reasonCode: tds[5],
+      pauseThresholdPrice: tds[6] || '',
+      resumptionDate: tds[7] || '',
+      resumptionQuoteTime: tds[8] || '',
+      resumptionTradeTime: tds[9] || ''
+    });
+  }
+  return rows;
+}
+
+async function refreshNasdaqHalts() {
+  if (nasdaqHaltsRefreshPromise) return nasdaqHaltsRefreshPromise;
+  nasdaqHaltsRefreshPromise = (async () => {
+    try {
+      const res = await axios.post(
+        NASDAQ_HALT_RPC_URL,
+        { id: 2, method: 'BL_TradeHalt.GetTradeHalts', params: '[]', version: '1.1' },
+        {
+          headers: { Referer: 'https://www.nasdaqtrader.com/trader.aspx?id=TradeHalts' },
+          timeout: 15000
+        }
+      );
+      const html = res.data?.result;
+      if (typeof html === 'string') {
+        nasdaqHaltsCache.rows = parseNasdaqHaltsHtml(html);
+        nasdaqHaltsCache.fetchedAt = Date.now();
+      }
+    } catch (err) {
+      console.warn('Nasdaq trade halts fetch failed:', err.message);
+    } finally {
+      nasdaqHaltsRefreshPromise = null;
+    }
+  })();
+  return nasdaqHaltsRefreshPromise;
+}
+
+function startNasdaqHaltPoll() {
+  refreshNasdaqHalts();
+  setInterval(refreshNasdaqHalts, NASDAQ_HALT_POLL_MS);
+}
+
+function findNasdaqHaltRow(symbol) {
+  const sym = (symbol || '').toUpperCase();
+  if (!sym) return null;
+  return nasdaqHaltsCache.rows.find(r => r.symbol === sym) || null;
+}
+
+function isNasdaqHaltActive(row, now = Date.now()) {
+  if (!row) return false;
+  const trade = (row.resumptionTradeTime || '').trim();
+  if (!trade) return true;
+  const resumeMs = parseNasdaqEtDateTime(row.resumptionDate, trade);
+  if (!Number.isFinite(resumeMs)) return true;
+  return now < resumeMs;
+}
+
+function isLudpStyleReason(code) {
+  return /^(LUDP|LULD)$/i.test((code || '').trim());
+}
+
+function tradingStatusFromNasdaqHalt(row, now = Date.now()) {
+  const reason = (row.reasonCode || 'Halt').trim();
+  const haltMs = parseNasdaqEtDateTime(row.haltDate, row.haltTime);
+  const halt_time_et = displayNasdaqEtTime(row.haltTime);
+  const ludp = isLudpStyleReason(reason);
+
+  let resumption_time_et = null;
+  let resumption_estimated = false;
+  const trade = (row.resumptionTradeTime || '').trim();
+  if (trade) {
+    resumption_time_et = displayNasdaqEtTime(trade);
+  } else if (ludp && Number.isFinite(haltMs)) {
+    resumption_time_et = formatTimeEtHms(haltMs + LUDP_PAUSE_MS);
+    resumption_estimated = true;
+  }
+
+  return {
+    status: 'halted',
+    status_line: `Status: Halt (${reason})`,
+    halt_time_et,
+    resumption_time_et,
+    resumption_pending: !trade,
+    resumption_estimated,
+    halt_reason: reason,
+    halt_source: 'nasdaq'
+  };
+}
+
+function normalizeSecurityStatus(quote) {
+  const raw = quote?.securityStatus;
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'string') return raw.trim();
+  const codes = {
+    0: 'Unknown',
+    1: 'Normal',
+    2: 'Halted',
+    3: 'Paused',
+    4: 'Offline',
+    5: 'Closed'
+  };
+  return codes[raw] || String(raw);
+}
+
+function haltReasonLabel(quote, statusStr) {
+  const s = (statusStr || '').toLowerCase();
+  if (/ludp|luld|limit up|limit down/.test(s)) return 'LUDP';
+  if (/pause/.test(s)) return 'Paused';
+  if (/^halted?$/i.test((statusStr || '').trim())) return 'LUDP';
+  if (/halt/.test(s)) return 'Halt';
+  if (statusStr) return statusStr;
+  return 'LUDP';
+}
+
+function detectQuoteHalt(quote, now = Date.now()) {
+  const statusStr = normalizeSecurityStatus(quote);
+  if (statusStr && /halt|pause|luld|limit state|non.?firm/i.test(statusStr)) {
+    return { halted: true, reason: haltReasonLabel(quote, statusStr) };
+  }
+  const session = getMarketSession(now);
+  if (session !== 'RTH' || !quote) return { halted: false };
+
+  const tradeMs = quote.tradeTime || quote.quoteTime;
+  if (!Number.isFinite(tradeMs) || !Number.isFinite(quote.lastPrice)) return { halted: false };
+  const staleMs = Date.now() - tradeMs;
+  const vol = quote.totalVolume;
+  if (Number.isFinite(vol) && vol > 0 && staleMs > 180000) {
+    return { halted: true, reason: 'LUDP', inferred: true };
+  }
+  return { halted: false };
+}
+
+function computeTradingStatus(symbol, quote, now = Date.now()) {
+  if (Date.now() - nasdaqHaltsCache.fetchedAt > NASDAQ_HALT_POLL_MS + 5000) {
+    refreshNasdaqHalts().catch(() => {});
+  }
+  const nasdaqRow = findNasdaqHaltRow(symbol);
+  if (nasdaqRow && isNasdaqHaltActive(nasdaqRow, now)) {
+    return tradingStatusFromNasdaqHalt(nasdaqRow, now);
+  }
+
+  const halt = detectQuoteHalt(quote, now);
+  let tr = haltTrackers[symbol];
+
+  if (halt.halted) {
+    if (!tr?.halted) {
+      const eventMs = quote?.tradeTime || quote?.quoteTime || now;
+      tr = { halted: true, haltSinceMs: eventMs, reason: halt.reason };
+      haltTrackers[symbol] = tr;
+    } else {
+      tr.reason = halt.reason || tr.reason;
+    }
+    const reason = tr.reason || 'LUDP';
+    const ludp = isLudpStyleReason(reason) || reason === 'LUDP';
+    let resumption_time_et = null;
+    let resumption_estimated = false;
+    if (ludp && Number.isFinite(tr.haltSinceMs)) {
+      resumption_time_et = formatTimeEtHms(tr.haltSinceMs + LUDP_PAUSE_MS);
+      resumption_estimated = true;
+    }
+    return {
+      status: 'halted',
+      status_line: `Status: Halt (${reason})`,
+      halt_time_et: formatTimeEtHms(tr.haltSinceMs),
+      resumption_time_et,
+      resumption_pending: true,
+      resumption_estimated,
+      halt_reason: reason,
+      halt_source: 'schwab'
+    };
+  }
+
+  if (tr?.halted) {
+    haltTrackers[symbol] = {
+      halted: false,
+      lastResumeMs: now,
+      lastHaltReason: tr.reason
+    };
+  } else if (!tr) {
+    haltTrackers[symbol] = { halted: false };
+  }
+
+  const session = getMarketSession(now);
+  if (session === 'CLOSED') {
+    return { status: 'closed', status_line: 'Status: Closed', halt_time_et: null, resumption_time_et: null };
+  }
+  if (session === 'PRE') {
+    return { status: 'pre', status_line: 'Status: Pre-Market', halt_time_et: null, resumption_time_et: null };
+  }
+  if (session === 'POST') {
+    return { status: 'ah', status_line: 'Status: After Hours', halt_time_et: null, resumption_time_et: null };
+  }
+  return { status: 'open', status_line: 'Status: Open', halt_time_et: null, resumption_time_et: null };
+}
+
+function formatEtHm(ms) {
+  const { h, m } = getEtHourMinute(ms);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function minuteClosePulseFromBars(completed1m) {
+  if (!completed1m?.length) {
+    return {
+      last_completed_1m_key: null,
+      minute_close_direction: null,
+      last_completed_1m_close: null,
+      prev_completed_1m_close: null,
+      last_completed_1m_et_hm: null
+    };
+  }
+  const last = completed1m[completed1m.length - 1];
+  const key = String(last.datetime);
+  if (completed1m.length < 2) {
+    return {
+      last_completed_1m_key: key,
+      minute_close_direction: null,
+      last_completed_1m_close: last.close,
+      prev_completed_1m_close: null,
+      last_completed_1m_et_hm: formatEtHm(last.datetime)
+    };
+  }
+  const prev = completed1m[completed1m.length - 2];
+  let minute_close_direction = 'flat';
+  if (last.close > prev.close) minute_close_direction = 'up';
+  else if (last.close < prev.close) minute_close_direction = 'down';
+  return {
+    last_completed_1m_key: key,
+    minute_close_direction,
+    last_completed_1m_close: last.close,
+    prev_completed_1m_close: prev.close,
+    last_completed_1m_et_hm: formatEtHm(last.datetime)
+  };
 }
 
 // TOS-exact EMA: SMA seed at index (period - 1), then standard EMA recursion.
@@ -654,42 +1900,46 @@ function calcEMASMASeed(values, period) {
   return out;
 }
 
-// TOS MACD (12, 26, 9, EXPONENTIAL) on a close array; null until valid (35 bars for histogram).
+// TOS ExpAverage — first value seeds the EMA (ThinkScript ExpAverage, not SMA seed).
+function calcExpAverageTOS(values, period) {
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (!n || values.some(v => !Number.isFinite(v))) return out;
+
+  const k = 2 / (period + 1);
+  let ema = values[0];
+  out[0] = ema;
+  for (let i = 1; i < n; i++) {
+    ema = values[i] * k + ema * (1 - k);
+    out[i] = ema;
+  }
+  return out;
+}
+
+// TOS built-in MACD study: ExpAverage(close,12/26), signal = ExpAverage(MACD,9), hist = MACD - signal.
 function calcMACDExactTOS(closes) {
   const n = closes.length;
   const macdLine   = Array(n).fill(null);
   const signalLine = Array(n).fill(null);
   const histogram  = Array(n).fill(null);
 
-  if (!n || closes.some(v => !Number.isFinite(v))) {
+  if (n < 26 || closes.some(v => !Number.isFinite(v))) {
     return { macdLine, signalLine, histogram };
   }
 
-  const ema12 = calcEMASMASeed(closes, 12);
-  const ema26 = calcEMASMASeed(closes, 26);
+  const ema12 = calcExpAverageTOS(closes, 12);
+  const ema26 = calcExpAverageTOS(closes, 26);
+  const macdSeq = [];
 
   for (let i = 0; i < n; i++) {
-    if (ema12[i] !== null && ema26[i] !== null) {
-      macdLine[i] = ema12[i] - ema26[i];
-    }
+    macdLine[i] = ema12[i] - ema26[i];
+    macdSeq.push(macdLine[i]);
   }
 
-  const macdSeq    = [];
-  const macdIndices = [];
+  const signalEma = calcExpAverageTOS(macdSeq, 9);
   for (let i = 0; i < n; i++) {
-    if (macdLine[i] !== null) {
-      macdSeq.push(macdLine[i]);
-      macdIndices.push(i);
-    }
-  }
-
-  const signalEma = calcEMASMASeed(macdSeq, 9);
-  for (let j = 0; j < macdSeq.length; j++) {
-    if (signalEma[j] !== null) {
-      const i = macdIndices[j];
-      signalLine[i] = signalEma[j];
-      histogram[i]  = macdLine[i] - signalEma[j];
-    }
+    signalLine[i] = signalEma[i];
+    histogram[i] = macdLine[i] - signalEma[i];
   }
 
   return { macdLine, signalLine, histogram };
@@ -708,17 +1958,9 @@ function getCompleted1mBars(candles) {
   return sorted;
 }
 
-function getCompleted5mBars(candles) {
-  if (!candles?.length) return [];
-  const sorted = candles.length > 1 && candles[0].datetime
-    ? [...candles].sort((a, b) => a.datetime - b.datetime)
-    : [...candles];
-  const bucketMs   = 5 * 60 * 1000;
-  const nowBucket  = Math.floor(Date.now() / bucketMs) * bucketMs;
-  const last       = sorted[sorted.length - 1];
-  const lastBucket = Math.floor(last.datetime / bucketMs) * bucketMs;
-  if (lastBucket >= nowBucket) return sorted.slice(0, -1);
-  return sorted;
+/** Closes for EMA/MACD — includes forming bar (matches TOS chart updating live). */
+function getIndicatorCloses(candles) {
+  return sortCandles(candles).map(c => c.close).filter(Number.isFinite);
 }
 
 function calcVWAP(candles) {
@@ -734,17 +1976,119 @@ function calcVWAP(candles) {
   return cumVol > 0 ? cumTPV / cumVol : null;
 }
 
+/** VWAP 1m series for compute; widens to vol bars on same session day if PM pack is empty. */
+function resolveVwapCandlesForCompute(candles1mRaw, quote, pmCfg, vwapPack, vwapAnchor) {
+  const bucketMs = vwapPack.bucketMs || 60 * 1000;
+  let candlesVwap = sortCandles(vwapPack.candles);
+  if (quote && shouldPatchQuote(candlesVwap, quote, bucketMs)) {
+    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, bucketMs);
+  }
+  if (candlesVwap.some(c => Number.isFinite(c.volume) && c.volume > 0)) {
+    return { candlesVwap, vwapAnchor };
+  }
+
+  const withVol = sortCandles(candles1mRaw).filter(
+    c => Number.isFinite(c.volume) && c.volume > 0
+  );
+  if (!withVol.length) {
+    return { candlesVwap: [], vwapAnchor };
+  }
+
+  const refMs = withVol[withVol.length - 1].datetime;
+  const refDay = getEtDateString(refMs);
+  const { ethStartMs, capEndMs } = getEthDayBounds(refMs);
+  candlesVwap = withVol.filter(c =>
+    getEtDateString(c.datetime) === refDay &&
+    c.datetime >= ethStartMs &&
+    c.datetime <= capEndMs
+  );
+  if (quote && shouldPatchQuote(candlesVwap, quote, bucketMs)) {
+    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, bucketMs);
+  }
+  return { candlesVwap, vwapAnchor };
+}
+
+function isToppingTailBar(bar) {
+  const range = bar.high - bar.low;
+  if (range <= 0) return false;
+  const upperWick = bar.high - Math.max(bar.open, bar.close);
+  return upperWick / range > TOPPING_TAIL_WICK_RATIO;
+}
+
+function isDojiBar(bar) {
+  const range = bar.high - bar.low;
+  if (range <= 0) return false;
+  const body = Math.abs(bar.close - bar.open);
+  return body / range < DOJI_BODY_RATIO;
+}
+
+function findMostRecentWarningBar(completedBars, predicate, lookback = WARNING_LOOKBACK_BARS) {
+  const window = completedBars.slice(-lookback);
+  for (let i = window.length - 1; i >= 0; i--) {
+    if (predicate(window[i], completedBars)) return window[i];
+  }
+  return null;
+}
+
+function hasHighVolSellInLookback(completedBars) {
+  return findMostRecentWarningBar(
+    completedBars, isHighVolumeSellBar, HIGH_VOL_SELL_LOOKBACK_BARS
+  ) != null;
+}
+
+/** Parabolic-style HH: 3+ ascending highs in last ~5 completed bars (+ forming break). */
+function computeParabolicMomentum(completed1m, forming1m) {
+  const recent = completed1m.slice(-MOMENTUM_HH_LOOKBACK);
+  if (recent.length < 3) return false;
+  let hhSteps = 0;
+  for (let i = 1; i < recent.length; i++) {
+    if (recent[i].high > recent[i - 1].high) hhSteps++;
+  }
+  const last = recent[recent.length - 1];
+  if (forming1m && Number.isFinite(forming1m.high) && last && forming1m.high > last.high) {
+    hhSteps++;
+  }
+  return hhSteps >= MOMENTUM_HH_MIN_STEPS;
+}
+
+function isHighVolumeSellBar(bar, completedBars) {
+  if (!bar || bar.close >= bar.open) return false;
+  const vol = bar.volume;
+  if (!Number.isFinite(vol) || vol <= 0) return false;
+  const idx = completedBars.indexOf(bar);
+  if (idx < HIGH_VOL_SELL_PRIOR_BARS) return false;
+  const prior = completedBars.slice(idx - HIGH_VOL_SELL_PRIOR_BARS, idx);
+  const avg = prior.reduce((s, c) => s + (Number.isFinite(c.volume) ? c.volume : 0), 0) /
+    HIGH_VOL_SELL_PRIOR_BARS;
+  if (avg <= 0) return false;
+  return vol >= avg * HIGH_VOL_SELL_RATIO;
+}
+
 function computeWarnings(candles1m, completed1m) {
-  const warnings = [];
-  if (candles1m.length < 4) return warnings;
+  const codes = [];
+  const bars = {};
+  if (candles1m.length < 4) return { codes, bars };
 
   const bar = candles1m[candles1m.length - 2];
-  const range = bar.high - bar.low;
-  if (range > 0) {
-    const upperWick = bar.high - Math.max(bar.open, bar.close);
-    if (upperWick / range > 0.6) warnings.push('topping_tail');
-    const body = Math.abs(bar.close - bar.open);
-    if (body / range < 0.1) warnings.push('doji');
+
+  const toppingBar = findMostRecentWarningBar(completed1m, isToppingTailBar);
+  if (toppingBar) {
+    codes.push('topping_tail');
+    bars.topping_tail = formatEtHm(toppingBar.datetime);
+  }
+
+  const dojiBar = findMostRecentWarningBar(completed1m, isDojiBar);
+  if (dojiBar) {
+    codes.push('doji');
+    bars.doji = formatEtHm(dojiBar.datetime);
+  }
+
+  const hvSellBar = findMostRecentWarningBar(
+    completed1m, isHighVolumeSellBar, HIGH_VOL_SELL_LOOKBACK_BARS
+  );
+  if (hvSellBar) {
+    codes.push('high_volume_sell');
+    bars.high_volume_sell = formatEtHm(hvSellBar.datetime);
   }
 
   const last3 = candles1m.slice(-4, -1);
@@ -755,29 +2099,229 @@ function computeWarnings(candles1m, completed1m) {
     const bodiesShrinking   = bodies[0] > bodies[1] && bodies[1] > bodies[2];
     const heightsShrinking  = heights[0] > heights[1] && heights[1] > heights[2];
     if (bullishAll && (bodiesShrinking || heightsShrinking)) {
-      warnings.push('momentum_exhaustion');
+      codes.push('momentum_exhaustion');
     }
   }
 
   const prior10 = candles1m.slice(-12, -2);
   if (prior10.length >= 10) {
     const prior10Avg = prior10.reduce((s, c) => s + c.volume, 0) / prior10.length;
-    if (bar.volume < prior10Avg * 0.5) warnings.push('tape_slowdown');
+    if (bar.volume < prior10Avg * 0.5) codes.push('tape_slowdown');
   }
 
-  const ema20arr = calcEMASMASeed(completed1m.map(c => c.close), 20);
-  const ema20_1m = lastFinite(ema20arr);
+  const completedCloses = completed1m.map(c => c.close);
+  const ema9_1m = lastFinite(calcExpAverageTOS(completedCloses, 9));
+  const ema20_1m = lastFinite(calcExpAverageTOS(completedCloses, 20));
+  if (Number.isFinite(ema9_1m) && bar.close < ema9_1m) {
+    codes.push('lost_9_ema');
+  }
   if (Number.isFinite(ema20_1m) && bar.close < ema20_1m) {
-    warnings.push('lost_20_ema');
+    codes.push('lost_20_ema');
   }
 
-  return warnings;
+  return { codes, bars };
 }
 
-function trafficLightRaw(countGreen) {
-  if (countGreen === 4) return 'IN_PLAY';
-  if (countGreen >= 2) return 'CAUTION';
-  return 'BACK_SIDE';
+function barTestsResistance(bar, level) {
+  return bar && Number.isFinite(bar.high) && bar.high >= level - LEVEL_NEAR_USD;
+}
+
+function barTestsSupport(bar, level) {
+  return bar && Number.isFinite(bar.low) && bar.low <= level + LEVEL_NEAR_USD;
+}
+
+function crossedAboveRecently(completedBars, level) {
+  const n = completedBars.length;
+  for (let i = Math.max(1, n - LEVEL_BREAK_LOOKBACK_BARS); i < n; i++) {
+    const prev = completedBars[i - 1].close;
+    const cur = completedBars[i].close;
+    if (Number.isFinite(prev) && Number.isFinite(cur) && prev <= level && cur > level) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function crossedBelowRecently(completedBars, level) {
+  const n = completedBars.length;
+  for (let i = Math.max(1, n - LEVEL_BREAK_LOOKBACK_BARS); i < n; i++) {
+    const prev = completedBars[i - 1].close;
+    const cur = completedBars[i].close;
+    if (Number.isFinite(prev) && Number.isFinite(cur) && prev >= level && cur < level) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function computeResistanceSignal(price, keyUp, completedBars, formingBar) {
+  if (!keyUp?.price || !Number.isFinite(keyUp.price)) {
+    return {
+      state: 'green',
+      phase: 'no_resistance_above',
+      reason: 'No resistance above price',
+      level_price: null,
+      level_label: null,
+      distance: null
+    };
+  }
+  const level = keyUp.price;
+  const label = keyUp.kind_label || 'Resistance';
+  const distBelow = level - price;
+  const last = completedBars.length ? completedBars[completedBars.length - 1] : null;
+
+  if (crossedAboveRecently(completedBars, level) && price > level + LEVEL_BREAK_USD) {
+    return {
+      state: 'green',
+      phase: 'broke_through',
+      reason: `Broke · $${level.toFixed(2)}`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(price - level)
+    };
+  }
+  if (distBelow > LEVEL_NEAR_USD) {
+    return {
+      state: 'green',
+      phase: 'clear',
+      reason: `Clear · $${level.toFixed(2)} ($${distBelow.toFixed(2)} below)`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distBelow)
+    };
+  }
+
+  const nearResistance = distBelow >= 0 && distBelow <= LEVEL_NEAR_USD;
+  const testing = nearResistance && (barTestsResistance(formingBar, level) || barTestsResistance(last, level));
+
+  if (testing && last && Number.isFinite(last.close) && last.close < level) {
+    return {
+      state: 'red',
+      phase: 'reject',
+      reason: `Rejected · $${level.toFixed(2)} (close below)`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distBelow)
+    };
+  }
+  if (testing) {
+    return {
+      state: 'yellow',
+      phase: 'testing',
+      reason: `Testing · $${level.toFixed(2)}`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distBelow)
+    };
+  }
+  if (nearResistance && distBelow > 0) {
+    return {
+      state: 'yellow',
+      phase: 'approach',
+      reason: `Approaching · $${level.toFixed(2)} ($${distBelow.toFixed(2)} away)`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distBelow)
+    };
+  }
+  if (price > level) {
+    return {
+      state: 'yellow',
+      phase: 'testing',
+      reason: `Above · $${level.toFixed(2)} (watch hold)`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(price - level)
+    };
+  }
+  return {
+    state: 'green',
+    phase: 'clear',
+    reason: `Clear · $${level.toFixed(2)}`,
+    level_price: round2(level),
+    level_label: label,
+    distance: round2(distBelow)
+  };
+}
+
+function computeSupportSignal(price, keyDown, completedBars, formingBar) {
+  if (!keyDown?.price || !Number.isFinite(keyDown.price)) {
+    return {
+      state: 'yellow',
+      phase: 'no_support_below',
+      reason: 'No support mapped below',
+      level_price: null,
+      level_label: null,
+      distance: null
+    };
+  }
+  const level = keyDown.price;
+  const label = keyDown.kind_label || 'Support';
+  const distAbove = price - level;
+  const last = completedBars.length ? completedBars[completedBars.length - 1] : null;
+
+  if (price < level - LEVEL_BREAK_USD ||
+      (crossedBelowRecently(completedBars, level) && price < level)) {
+    return {
+      state: 'red',
+      phase: 'broken',
+      reason: `Support broken · $${level.toFixed(2)}`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distAbove)
+    };
+  }
+
+  const nearSupport = distAbove >= 0 && distAbove <= LEVEL_NEAR_USD;
+  const testing = nearSupport && (barTestsSupport(formingBar, level) || barTestsSupport(last, level));
+
+  if (testing) {
+    return {
+      state: 'yellow',
+      phase: 'testing',
+      reason: `Testing support · $${level.toFixed(2)}`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distAbove)
+    };
+  }
+  if (nearSupport) {
+    return {
+      state: 'green',
+      phase: 'near',
+      reason: `Near support · $${level.toFixed(2)} ($${distAbove.toFixed(2)} above)`,
+      level_price: round2(level),
+      level_label: label,
+      distance: round2(distAbove)
+    };
+  }
+  return {
+    state: 'yellow',
+    phase: 'far',
+    reason: `Far from support · $${level.toFixed(2)} ($${distAbove.toFixed(2)} above)`,
+    level_price: round2(level),
+    level_label: label,
+    distance: round2(distAbove)
+  };
+}
+
+function row1AllGreen(frontSide) {
+  return frontSide && Object.values(frontSide).every(Boolean);
+}
+
+function row2AllGreen(levelSignals, momentum) {
+  const r = levelSignals?.resistance;
+  const s = levelSignals?.support;
+  const resOk = r?.state === 'green' &&
+    ['clear', 'broke_through', 'no_resistance_above'].includes(r.phase);
+  const supOk = s?.state === 'green' && s.phase === 'near';
+  return resOk && supOk && momentum?.parabolic_hh === true;
+}
+
+function trafficBanner(frontSide, levelSignals, momentum) {
+  if (!row1AllGreen(frontSide)) return 'NO_ENTRY';
+  if (row2AllGreen(levelSignals, momentum)) return 'LOOK_FOR_SETUP';
+  return 'CAUTION';
 }
 
 function updateTrafficLightConfirmed(symbol, raw) {
@@ -810,23 +2354,204 @@ function updateTrafficLightConfirmed(symbol, raw) {
   return confirmed;
 }
 
+function keyLevelHintLines(title, price, chosen, alts, extra) {
+  const lines = [
+    title,
+    'Sources: multi-touch clusters ($0.05), 9 EMA, VWAP, pivots, session HOD/LOD, half/whole $.',
+    'Labels: Whole/Half Dollar, Pivot (2+ open/close at reversal), HOD/LOD, Premarket High/Low.',
+    'Resistance prefers multi-touch clusters; single-wick HOD is deprioritized.'
+  ];
+  if (chosen) {
+    const touchNote = chosen.touches != null ? ` · ${chosen.touches} bar tests` : '';
+    lines.push(`Selected: $${chosen.price.toFixed(2)} (${chosen.kind_label}${touchNote})`);
+    lines.push(`Distance: $${(chosen.price - price).toFixed(2)}`);
+  } else {
+    lines.push('No level found in range.');
+  }
+  if (extra?.session_hod) {
+    const h = extra.session_hod;
+    const ht = h.touches != null ? `${h.touches} test(s)` : '—';
+    lines.push(`Session HOD: $${h.price.toFixed(2)} (${ht}) — ceiling wick; shown separately when not the primary level.`);
+  }
+  if (alts?.length > 1) {
+    lines.push('Also considered:');
+    alts.slice(1, 5).forEach(c => lines.push(`  $${c.price.toFixed(2)} (${c.kind_label})`));
+  }
+  return lines;
+}
+
+function buildCalcHints({
+  price, prevClose, vwap, vwapAnchor, vwapPack,
+  ema9_1m_value, ema20_1m_value, macd_histogram_value,
+  completed1m, candles1m, forming1m, recent4, recent4High, momentum,
+  rvolDaily, todayVol, avg14Vol, front_side, macdBarCount,
+  keyLevels, level_signals, quote, now = Date.now()
+}) {
+  const nl = lines => lines.join('\n');
+  const spread = quoteBidAskSpread(quote);
+  const barLine = c => `${formatEtHm(c.datetime)} H=${c.high.toFixed(2)} L=${c.low.toFixed(2)} C=${c.close.toFixed(2)} V=${c.volume}`;
+
+  const momLines = [
+    `Front-side momentum (~${MOMENTUM_HH_LOOKBACK}m): parabolic higher-highs ladder.`,
+    `Need ${MOMENTUM_HH_MIN_STEPS}+ steps where each bar high > prior bar high`,
+    '(forming bar can add one step). Not a GO veto — consolidation wicks OK.'
+  ];
+  const recent5 = completed1m.slice(-MOMENTUM_HH_LOOKBACK);
+  if (recent5.length >= 2) {
+    recent5.forEach((c, i) => {
+      const prev = i > 0 ? recent5[i - 1] : null;
+      const step = prev && c.high > prev.high ? 'HH↑' : '—';
+      momLines.push(`  ${barLine(c)} ${step}`);
+    });
+    if (forming1m) {
+      const ref = recent5[recent5.length - 1];
+      const step = ref && forming1m.high > ref.high ? 'HH↑ forming' : 'forming';
+      momLines.push(`  ${formatEtHm(forming1m.datetime)} H=${forming1m.high.toFixed(2)} (live) ${step}`);
+    }
+    momLines.push(`→ ${momentum?.parabolic_hh ? 'GREEN (front side of move)' : 'RED (no parabolic HH lately)'}`);
+  } else {
+    momLines.push(`Need ≥3 completed 1m bars (have ${recent5.length}).`);
+  }
+
+  return {
+    price: nl([
+      'Schwab quote lastPrice.',
+      `Last: $${price.toFixed(2)}`,
+      'Color: green $2–$20, yellow $1–$1.99, red otherwise.'
+    ]),
+    day_change_pct: nl([
+      '((lastPrice - previousClose) / previousClose) × 100',
+      `($${price.toFixed(2)} - $${prevClose.toFixed(2)}) / $${prevClose.toFixed(2)}`,
+      'Green if > 10%.'
+    ]),
+    vwap_delta: nl([
+      `VWAP anchor: ${vwapAnchor} (${vwapPack?.tag ?? '—'})`,
+      vwap != null ? `Session VWAP: $${vwap.toFixed(2)}` : 'VWAP unavailable (no volume in window)',
+      vwap != null ? `Delta: lastPrice - VWAP. Green if price > VWAP.` : '',
+      vwap != null ? `Price $${price.toFixed(2)} vs VWAP $${vwap.toFixed(2)}` : ''
+    ]),
+    rvol_daily: nl([
+      `Daily RVOL = today's cumulative volume ÷ avg of prior ${DAILY_RVOL_LOOKBACK} session daily volumes.`,
+      `Today vol (sum of 1m bars, ET date ${getEtDateString(now)}): ${todayVol != null ? Math.round(todayVol).toLocaleString() : '—'}`,
+      avg14Vol != null ? `Avg prior ${DAILY_RVOL_LOOKBACK} days: ${Math.round(avg14Vol).toLocaleString()}` : `Need ${DAILY_RVOL_LOOKBACK} prior daily bars from Schwab.`,
+      rvolDaily != null ? `RVOL = ${rvolDaily.toFixed(2)}x. Green if ≥ 5x.` : 'RVOL unavailable.'
+    ]),
+    ema9_1m: nl([
+      '9 EMA (1m) — TOS ExpAverage, today 4AM ET session only (matches TOS active day).',
+      `Value: $${ema9_1m_value?.toFixed(2) ?? '—'} on ${macdBarCount ?? '—'} bars (includes forming).`,
+      `Compare to 20 EMA: ${ema9_1m_value > ema20_1m_value ? '9 > 20 (green)' : '9 ≤ 20 (red)'}.`
+    ]),
+    ema20_1m: nl([
+      '20 EMA (1m) — TOS ExpAverage, same today-session series as 9 EMA.',
+      `Value: $${ema20_1m_value?.toFixed(2) ?? '—'}.`
+    ]),
+    macd_histogram: nl([
+      'MACD (12, 26, 9) — TOS ExpAverage on today 4AM–now ETH 1m bars (includes forming bar).',
+      `Series: ${macdBarCount ?? '—'} bars (full session; gap trim not applied to MACD).`,
+      `Histogram: ${macd_histogram_value}`,
+      'Green if > 0. Compare to TOS MACD (0,0,DAY) on the 1m chart with extended hours.'
+    ]),
+    session: nl([
+      'ET session: Pre-Market 4:00–9:30, Market Open 9:30–4:00, After Hours 4:00–8:00, else Closed.',
+      'Colors: Pre-Market gold, Market Open green, After Hours blue, Closed red.'
+    ]),
+    key_level_up: nl(keyLevelHintLines(
+      'Next resistance above price',
+      price,
+      keyLevels?.key_level_up,
+      keyLevels?.key_level_candidates_up,
+      { session_hod: keyLevels?.key_level_session_hod }
+    )),
+    key_level_down: nl(keyLevelHintLines(
+      'Next support below price',
+      price,
+      keyLevels?.key_level_down,
+      keyLevels?.key_level_candidates_down
+    )),
+    dots: {
+      emas: nl([
+        'GO check: 9 EMA > 20 EMA (1m).',
+        `9 EMA $${ema9_1m_value?.toFixed(2) ?? '—'} vs 20 EMA $${ema20_1m_value?.toFixed(2) ?? '—'}`,
+        `→ ${front_side.emas ? 'GREEN' : 'RED'}`
+      ]),
+      macd: nl([
+        'GO check: MACD histogram > 0.',
+        `Histogram = ${macd_histogram_value}`,
+        `→ ${front_side.macd ? 'GREEN' : 'RED'}`
+      ]),
+      vwap: nl([
+        'GO check: lastPrice > session VWAP.',
+        vwap != null ? `Price $${price.toFixed(2)} vs VWAP $${vwap.toFixed(2)}` : 'No VWAP',
+        `→ ${front_side.vwap ? 'GREEN' : 'RED'}`
+      ]),
+      no_hv_sell: nl([
+        `GO check: no high-volume sell order in last ${HIGH_VOL_SELL_LOOKBACK_BARS} completed 1m bars.`,
+        `Bearish bar with volume ≥ 2× prior ${HIGH_VOL_SELL_PRIOR_BARS}-bar avg = HV sell (see warnings).`,
+        `→ ${front_side.no_hv_sell ? 'GREEN' : 'RED (HV sell in window)'}`
+      ]),
+      spread_ok: nl([
+        `GO check: ask − bid ≤ $${MAX_BID_ASK_SPREAD_USD.toFixed(2)} (Schwab quote).`,
+        spread != null
+          ? `Bid $${(quote.bidPrice ?? quote.bid)?.toFixed(2) ?? '—'} · Ask $${(quote.askPrice ?? quote.ask)?.toFixed(2) ?? '—'} · Spread $${spread.toFixed(2)}`
+          : 'Bid/ask not available on quote',
+        `→ ${front_side.spread_ok ? 'GREEN' : 'RED'}`
+      ])
+    },
+    momentum: nl(momLines),
+    level_resistance: level_signals?.resistance
+      ? nl([
+          'Row 2 — resistance (tri-state). Uses KEY LVL ↑ from context.',
+          level_signals.resistance.reason,
+          `Phase: ${level_signals.resistance.phase} · state: ${level_signals.resistance.state}`
+        ])
+      : '',
+    level_support: level_signals?.support
+      ? nl([
+          'Row 2 — support (tri-state). Uses KEY LVL ↓ from context.',
+          level_signals.support.reason,
+          `Phase: ${level_signals.support.phase} · state: ${level_signals.support.state}`
+        ])
+      : ''
+  };
+}
+
 function computeStateFromCache(symbol) {
   const cache = marketDataCache[symbol];
   if (!cache) {
     return { status: 'insufficient_data', missing: ['initializing'] };
   }
 
-  const { quote, pack5m, candles1m: candles1mRaw } = cache;
-  if (!quote || !pack5m || !candles1mRaw) {
+  const { quote, candles1m: candles1mRaw, candles1mMacd, dailyCandles, quoteFetched } = cache;
+  if (quoteFetched && !isQuoteValid(quote)) {
+    return {
+      status: 'invalid_symbol',
+      symbol,
+      suggestion: TICKER_SUGGESTIONS[symbol] || null
+    };
+  }
+  if (!quote || !candles1mRaw) {
     const missing = [];
     if (!quote) missing.push('quote');
-    if (!pack5m?.candles?.length) missing.push('5m_candles');
     if (!candles1mRaw?.length) missing.push('1m_candles');
     return { status: 'insufficient_data', missing };
   }
 
-  const pmCfg = getVwapConfig();
-  const { vwapPack, vwapAnchor } = resolveVwapPackFrom1m(candles1mRaw, pmCfg);
+  const now = Date.now();
+  const sources = [candles1mMacd, candles1mRaw];
+  const session1m = buildSession1mBars(sources, quote, now);
+  const indicator1m = buildIndicator1mBars(sources, quote, now);
+  const candles1mLive = session1m;
+  const closesInd = getIndicatorCloses(indicator1m);
+
+  if (session1m.length < MACD_MIN_BARS || closesInd.length < MACD_MIN_BARS) {
+    console.warn(
+      `[${symbol}] session=${session1m.length} indicator=${indicator1m.length} closes=${closesInd.length} raw=${candles1mRaw?.length ?? 0}`
+    );
+  }
+
+  const pmCfg = getVwapConfig(now);
+  const vwapCfg = vwapCfgForSessionBars(session1m, pmCfg, now);
+  let { vwapPack, vwapAnchor } = resolveVwapPackFrom1m(session1m, vwapCfg, now);
 
   const missing = [];
   if (!quote?.lastPrice || !Number.isFinite(quote.lastPrice) ||
@@ -834,87 +2559,145 @@ function computeStateFromCache(symbol) {
     missing.push('quote');
   }
 
-  const candles5m = sortCandles(pack5m.candles);
-  const candles1m = sortCandles(candles1mRaw);
-  if (candles5m.length < 25) missing.push('5m_candles');
-  if (candles1m.length < 35) missing.push('1m_candles');
+  if (session1m.length < SESSION_MIN_BARS) missing.push('1m_candles');
+  const macdFloor = closesInd.length >= MACD_MIN_BARS ? MACD_MIN_BARS : MACD_MIN_BARS_SPARSE;
+  if (closesInd.length < macdFloor) missing.push('1m_candles');
 
-  let candlesVwap = sortCandles(vwapPack.candles);
-  if (quote && shouldPatchQuote(candlesVwap, quote, vwapPack.bucketMs)) {
-    candlesVwap = applyLiveQuoteToCandles(candlesVwap, quote, vwapPack.bucketMs);
-  }
-  const hasVwapVol = candlesVwap.some(c => Number.isFinite(c.volume) && c.volume > 0);
-  if (!hasVwapVol) missing.push('vwap_candles');
+  const insufficientDetail = {
+    session_bars: session1m.length,
+    indicator_bars: indicator1m.length,
+    raw_bars: candles1mRaw?.length ?? 0,
+    required_session_bars: SESSION_MIN_BARS,
+    required_indicator_bars: MACD_MIN_BARS
+  };
+
+  const { candlesVwap, vwapAnchor: resolvedVwapAnchor } = resolveVwapCandlesForCompute(
+    session1m, quote, pmCfg, vwapPack, vwapAnchor
+  );
+  vwapAnchor = resolvedVwapAnchor;
 
   if (missing.length) {
-    return { status: 'insufficient_data', missing };
+    return { status: 'insufficient_data', missing, detail: insufficientDetail };
   }
 
   const price = quote.lastPrice;
   const prevClose = quote.closePrice;
   const vwap = calcVWAP(candlesVwap);
 
-  const completed5m = getCompleted5mBars(candles5m);
-  const completed1m = getCompleted1mBars(candles1m);
-  const closes1m = completed1m.map(c => c.close);
-  const ema9_1m_value = lastFinite(calcEMASMASeed(closes1m, 9));
-  const ema20_1m_value = lastFinite(calcEMASMASeed(closes1m, 20));
+  const completedInd = getCompleted1mBars(session1m);
+  const ema9_1m_value = lastFinite(calcExpAverageTOS(closesInd, 9));
+  const ema20_1m_value = lastFinite(calcExpAverageTOS(closesInd, 20));
   const front_side_emas = Number.isFinite(ema9_1m_value) && Number.isFinite(ema20_1m_value) &&
     ema9_1m_value > ema20_1m_value;
 
-  const { histogram } = calcMACDExactTOS(closes1m);
+  const { histogram } = calcMACDExactTOS(closesInd);
   const macd_histogram_value = lastFinite(histogram);
   if (!Number.isFinite(macd_histogram_value)) {
-    return { status: 'insufficient_data', missing: ['1m_candles'] };
+    return {
+      status: 'insufficient_data',
+      missing: ['1m_candles'],
+      detail: insufficientDetail
+    };
   }
   const front_side_macd = macd_histogram_value > 0;
   const front_side_vwap = vwap != null && price > vwap;
 
-  const forming5m = candles5m[candles5m.length - 1];
-  const recent4 = completed5m.slice(-4);
-  const recent4High = recent4.length
-    ? Math.max(...recent4.map(c => c.high))
-    : -Infinity;
-  const front_side_hh = recent4.length >= 4 && forming5m.high > recent4High;
+  const completed1m = getCompleted1mBars(candles1mLive);
+  let forming1m = null;
+  let recent4 = [];
+  let recent4High = -Infinity;
+  if (candles1mLive.length >= 1) {
+    forming1m = candles1mLive[candles1mLive.length - 1];
+    if (completed1m.length >= 4) {
+      recent4 = completed1m.slice(-4);
+      recent4High = Math.max(...recent4.map(c => c.high));
+    }
+  }
 
+  const no_hv_sell = !hasHighVolSellInLookback(completed1m);
+  const spread = quoteBidAskSpread(quote);
+  const spread_ok = isSpreadAcceptable(quote);
   const front_side = {
     emas: front_side_emas,
     macd: front_side_macd,
     vwap: front_side_vwap,
-    hh: front_side_hh
+    no_hv_sell,
+    spread_ok
   };
-  const countGreen = Object.values(front_side).filter(Boolean).length;
-  const warnings = computeWarnings(candles1m, completed1m);
+  const momentum = {
+    parabolic_hh: computeParabolicMomentum(completed1m, forming1m)
+  };
+  const warningResult = computeWarnings(candles1mLive, completedInd);
 
-  const prior10Vol = candles1m.slice(-12, -2);
-  const prior10AvgVol = prior10Vol.length
-    ? prior10Vol.reduce((s, c) => s + c.volume, 0) / prior10Vol.length
-    : 1;
-  const currentVol = candles1m[candles1m.length - 1].volume;
-  const rvol_1m = prior10AvgVol > 0 ? currentVol / prior10AvgVol : 0;
+  const rvolResult = calcDailyRvol14(session1m, dailyCandles, now);
+  const rvol_daily = rvolResult.rvol;
 
-  const now = Date.now();
   const vwapDeltaDollars = vwap != null ? price - vwap : 0;
   const vwapDeltaPct = vwap != null && vwap > 0 ? ((price - vwap) / vwap) * 100 : 0;
+
+  const keyLevels = calcKeyLevels(session1m, dailyCandles, price, prevClose, ema9_1m_value, vwap, now);
+  const level_signals = {
+    resistance: computeResistanceSignal(
+      price, keyLevels.key_level_up, completed1m, forming1m
+    ),
+    support: computeSupportSignal(
+      price, keyLevels.key_level_down, completed1m, forming1m
+    )
+  };
+  const tradingStatus = computeTradingStatus(symbol, quote, now);
+  const minutePulse = minuteClosePulseFromBars(completed1m);
+
+  const calc_hints = buildCalcHints({
+    price, prevClose, vwap, vwapAnchor, vwapPack,
+    ema9_1m_value, ema20_1m_value, macd_histogram_value,
+    completed1m: completedInd, candles1m: session1m, forming1m, recent4, recent4High, momentum,
+    rvolDaily: rvol_daily,
+    todayVol: rvolResult.todayVol,
+    avg14Vol: rvolResult.avg14,
+    front_side,
+    macdBarCount: session1m.length,
+    keyLevels,
+    level_signals,
+    quote,
+    now
+  });
 
   return {
     status: 'ok',
     symbol,
-    traffic_light_raw: trafficLightRaw(countGreen),
+    traffic_light_raw: trafficBanner(front_side, level_signals, momentum),
     front_side,
-    warnings,
+    momentum,
+    level_signals,
+    warnings: warningResult.codes,
+    warning_bars: warningResult.bars,
     context: {
       price: round2(price),
       day_change_pct: round2(((price - prevClose) / prevClose) * 100),
-      vwap_delta_dollars: round2(vwapDeltaDollars),
-      vwap_delta_pct: round2(vwapDeltaPct),
+      vwap_value: vwap != null ? round2(vwap) : null,
+      vwap_delta_dollars: vwap != null ? round2(vwapDeltaDollars) : null,
+      vwap_delta_pct: vwap != null ? round2(vwapDeltaPct) : null,
       vwap_anchor: vwapAnchor,
+      bid_ask_spread: spread != null ? round2(spread) : null,
+      spread_max_usd: MAX_BID_ASK_SPREAD_USD,
       ema9_1m_value: round2(ema9_1m_value),
       ema20_1m_value: round2(ema20_1m_value),
       macd_histogram_value,
-      rvol_1m: round2(rvol_1m),
+      rvol_daily: rvol_daily != null ? round2(rvol_daily) : null,
+      key_level_up: keyLevels.key_level_up,
+      key_level_down: keyLevels.key_level_down,
+      key_level_session_hod: keyLevels.key_level_session_hod,
       time_et: formatTimeEtIso(now),
-      market_session: contextMarketSession(now)
+      market_session: contextMarketSession(now),
+      trading_status: tradingStatus,
+      last_completed_1m_key: minutePulse.last_completed_1m_key,
+      minute_close_direction: minutePulse.minute_close_direction,
+      last_completed_1m_close: Number.isFinite(minutePulse.last_completed_1m_close)
+        ? round2(minutePulse.last_completed_1m_close) : null,
+      prev_completed_1m_close: Number.isFinite(minutePulse.prev_completed_1m_close)
+        ? round2(minutePulse.prev_completed_1m_close) : null,
+      last_completed_1m_et_hm: minutePulse.last_completed_1m_et_hm,
+      calc_hints
     }
   };
 }
@@ -930,14 +2713,15 @@ function cacheRefreshError(symbol, err) {
       return;
     }
   }
-  console.error(`Refresh error (${symbol}):`, err.message);
+  const detail = err.status ? `${err.message} (${err.status})` : err.message;
+  console.error(`Refresh error (${symbol}):`, detail);
 }
 
 function recomputeAndCacheState(symbol) {
   if (symbol !== activeSymbol) return;
   try {
     const state = computeStateFromCache(symbol);
-    if (state.status === 'insufficient_data') {
+    if (state.status === 'insufficient_data' || state.status === 'invalid_symbol') {
       responseCache[symbol] = state;
       return;
     }
@@ -955,11 +2739,12 @@ async function refreshQuote(symbol) {
   if (refreshInFlight.quote) return;
   refreshInFlight.quote = true;
   try {
-    if (!authenticated && !(await refreshAccessToken())) return;
+    if (!(await ensureSchwabAuth())) return;
     const quote = await getQuote(symbol);
     if (symbol !== activeSymbol) return;
     if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
-    marketDataCache[symbol].quote = quote;
+    marketDataCache[symbol].quoteFetched = true;
+    marketDataCache[symbol].quote = isQuoteValid(quote) ? quote : null;
     recomputeAndCacheState(symbol);
   } catch (err) {
     cacheRefreshError(symbol, err);
@@ -973,16 +2758,34 @@ async function refreshCandles(symbol) {
   if (refreshInFlight.candles) return;
   refreshInFlight.candles = true;
   try {
-    if (!authenticated && !(await refreshAccessToken())) return;
-    const sessionCfg = getSessionConfig();
-    const [pack5m, candles1m] = await Promise.all([
-      getSignal5mCandles(symbol, sessionCfg),
-      getSignal1mCandles(symbol)
+    if (!(await ensureSchwabAuth())) return;
+    const entry = marketDataCache[symbol] || {};
+    const needDaily = !entry.dailyCandles || Date.now() - (entry.dailyFetchedAt || 0) > DAILY_CACHE_MS;
+    const needInd = !entry.candles1mMacd || Date.now() - (entry.candles1mMacdFetchedAt || 0) > INDICATOR_1M_CACHE_MS;
+
+    const [candles1m, candles1mMacd] = await Promise.all([
+      getSignal1mCandles(symbol),
+      needInd ? getIndicator1mCandles(symbol) : Promise.resolve(entry.candles1mMacd)
     ]);
     if (symbol !== activeSymbol) return;
     if (!marketDataCache[symbol]) marketDataCache[symbol] = {};
-    marketDataCache[symbol].pack5m = pack5m;
     marketDataCache[symbol].candles1m = candles1m;
+    if (needInd && candles1mMacd) {
+      marketDataCache[symbol].candles1mMacd = candles1mMacd;
+      marketDataCache[symbol].candles1mMacdFetchedAt = Date.now();
+    }
+
+    if (needDaily) {
+      try {
+        const dailyCandles = await getDailyCandles(symbol);
+        if (symbol !== activeSymbol) return;
+        marketDataCache[symbol].dailyCandles = dailyCandles;
+        marketDataCache[symbol].dailyFetchedAt = Date.now();
+      } catch (err) {
+        console.warn(`Daily history failed (${symbol}):`, err.message);
+      }
+    }
+
     recomputeAndCacheState(symbol);
   } catch (err) {
     cacheRefreshError(symbol, err);
@@ -1023,39 +2826,45 @@ function setActiveSymbol(symbol) {
 async function stateHandler(req, res) {
   const sym = req.params.symbol.toUpperCase();
 
-  if (!authenticated && !(await refreshAccessToken())) {
+  if (!(await ensureSchwabAuth())) {
     return res.json({ status: 'auth_failed' });
   }
 
   setActiveSymbol(sym);
+  triggerMinuteEdgeRefresh(sym);
 
   const cached = responseCache[sym];
   if (cached) {
-    if (cached.status === 'insufficient_data') {
-      return res.status(503).json(cached);
-    }
     if (cached.status === 'rate_limited') {
       return res.status(429).json(cached);
     }
-    if (cached.status === 'auth_failed') {
+    if (cached.status === 'auth_failed' && !authenticated) {
       return res.json(cached);
+    }
+    if (cached.status === 'auth_failed') {
+      delete responseCache[sym];
     }
     return res.json(cached);
   }
 
-  return res.status(503).json({ status: 'insufficient_data', missing: ['initializing'] });
+  return res.json({ status: 'insufficient_data', missing: ['initializing'] });
 }
 
 app.get('/api/state/:symbol', stateHandler);
 
 app.get('/api/health', async (req, res) => {
-  if (!authenticated && refreshToken) {
-    await refreshAccessToken();
-  }
+  if (!authenticated) await ensureSchwabAuth();
   res.json({
     authenticated,
+    token_store: TOKEN_FILE,
     last_successful_fetch: lastSuccessfulFetch,
-    rate_limit_status: rateLimitStatus
+    rate_limit_status: rateLimitStatus,
+    schwab_calls_per_min: getSchwabCallsPerMinute(),
+    poll_intervals_ms: {
+      quote: QUOTE_POLL_MS,
+      candles: CANDLE_POLL_MS,
+      frontend_state: Number(process.env.STATE_POLL_MS) || 1000
+    }
   });
 });
 
@@ -1071,27 +2880,38 @@ app.get('/api/status', (req, res) => {
 app.use(express.static('public'));
 
 // ── START ─────────────────────────────────────────────────────
-if (refreshToken) {
-  refreshAccessToken({ force: true }).catch(err => {
-    console.error('Startup token refresh failed:', err.message);
-  });
+async function initAuthOnStartup() {
+  if (accessTokenStillValid()) {
+    markAuthenticated();
+    console.log('✅ Startup: using stored access token (no refresh)');
+  } else if (refreshToken && Date.now() >= refreshTokenSuspendedUntil) {
+    await refreshAccessToken({ force: true });
+  }
+  startProactiveRefreshTimer();
+  if (authenticated) await probeSchwabAuth().catch(() => {});
 }
 
-const certPath = process.env.CERT_PATH;
-const keyPath  = process.env.KEY_PATH;
-
-if (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
-  const httpsOptions = {
-    cert: fs.readFileSync(certPath),
-    key:  fs.readFileSync(keyPath)
-  };
-  https.createServer(httpsOptions, app).listen(PORT, () => {
+function listen() {
+  const onListen = () => {
     console.log(`\n🚀 KQ-GateKeeper running at https://gatekeeper.veilforge.org`);
-    console.log(`🔐 Login at https://gatekeeper.veilforge.org/login\n`);
-  });
-} else {
-  app.listen(PORT, () => {
-    console.log(`\n🚀 KQ-GateKeeper running at http://localhost:${PORT}`);
-    console.log(`🔐 Login at http://localhost:${PORT}/login\n`);
-  });
+    console.log(`🔐 Login at https://gatekeeper.veilforge.org/login`);
+    console.log(`💾 Token store: ${TOKEN_FILE}\n`);
+  };
+  const certPath = process.env.CERT_PATH;
+  const keyPath  = process.env.KEY_PATH;
+  if (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    https.createServer({
+      cert: fs.readFileSync(certPath),
+      key:  fs.readFileSync(keyPath)
+    }, app).listen(PORT, onListen);
+  } else {
+    app.listen(PORT, onListen);
+  }
 }
+
+initAuthOnStartup()
+  .catch(err => console.error('Startup auth init failed:', err.message))
+  .finally(() => {
+    startNasdaqHaltPoll();
+    listen();
+  });

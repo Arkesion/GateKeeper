@@ -8,12 +8,13 @@ services:
     volumes:
       - /etc/gatekeeper/certs:/certs:ro
       - gatekeeper-data:/data
-      - /home/ark/Gatekeeper/tokens.json:/app/tokens.json
     env_file:
       - .env
     environment:
       - CERT_PATH=/certs/cert.pem
       - KEY_PATH=/certs/key.pem
+      - TOKEN_PATH=/data/tokens.json
+      - PUBLIC_URL=https://gatekeeper.veilforge.org
 
 volumes:
   gatekeeper-data:
