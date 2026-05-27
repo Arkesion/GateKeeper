@@ -188,6 +188,24 @@ Extended hours monitoring: roughly **4:00 AM to 8:00 PM ET**, with pre-market da
 
 ---
 
+## Disclaimer
+
+> **Disclaimer:** This project is for educational purposes only, is not affiliated with Charles Schwab, and does not constitute financial advice. Use at your own risk.
+
+This project is not affiliated with, endorsed by, or sponsored by The Charles Schwab Corporation. All trademarks and service marks are the property of their respective owners.
+
+**No warranty.** The software is provided "AS IS", without warranty of any kind, express or implied, including but not limited to merchantability or fitness for a particular purpose.
+
+**Limitation of liability.** In no event shall the authors or copyright holders be liable for any financial losses, trading errors, or other damages arising from the use of this software.
+
+**Not financial advice.** Traffic-light states, warnings, and context values are for educational and informational purposes only. They are not financial, investment, or trading advice.
+
+**Schwab Developer API.** You are responsible for complying with Schwab's Developer API terms, rate limits, data usage policies, and authentication requirements when you run this software.
+
+**Your deployment.** Each operator runs their own instance. You must supply your own Schwab API credentials and OAuth app configuration. Credentials and tokens are stored only on your server (`.env`, `TOKEN_PATH`); this project does not operate a hosted service and does not collect credentials from users.
+
+---
+
 ## License
 
-ISC (see `package.json`).
+Released under the [MIT License](LICENSE).
