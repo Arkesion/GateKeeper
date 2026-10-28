@@ -682,6 +682,7 @@
   let insufficientDetail = null;
   let healthData = { authenticated: true, rate_limit_status: 'ok' };
   let stateAuthFailed = false;
+  let feedStale = false;
   let unknownSymbol = false;
   let clockTimer = null;
   let ctxSnapshot = null;
@@ -1346,6 +1347,7 @@
     if (healthData.rate_limit_status === 'backing_off') return 'rate';
     if (!symbol) return null;
     if (unknownSymbol) return 'invalid';
+    if (feedStale) return 'stale';
     if (waitingForData || !hasReceivedOk) return 'waiting';
 
     const now = Date.now();
@@ -1412,6 +1414,10 @@
   function renderApiStats(health) {
     const el = document.getElementById('api-stats');
     if (!el || !health) return;
+    if (health.provider === 'webull') {
+      el.textContent = 'Webull stream · hover cells for math';
+      return;
+    }
     const cpm = health.schwab_calls_per_min;
     const pi = health.poll_intervals_ms;
     const cpmStr = Number.isFinite(cpm) ? String(cpm) : '—';
@@ -1465,6 +1471,19 @@
       }
 
       stateAuthFailed = false;
+
+      if (data?.status === 'data_stale') {
+        feedStale = true;
+        waitingForData = false;
+        hasReceivedOk = false;
+        clearContext();
+        setTrafficLightNeutral();
+        clearDots();
+        clearWarnings();
+        updateOverlays();
+        return;
+      }
+      feedStale = false;
 
       if (data?.status === 'invalid_symbol') {
         unknownSymbol = true;

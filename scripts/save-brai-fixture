@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Save BRAI 1-minute PRE+RTH bars for 2026-10-28."""
+
+import json
+import logging
+import sys
+from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sidecar"))
+
+from bars import session_window
+from webull_data import fetch_bars, make_data_client
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("webull").setLevel(logging.CRITICAL)
+    day = date(2026, 10, 28)
+    start_ms, end_ms = session_window(day=day)
+    token_dir = Path(__file__).resolve().parents[1] / "sidecar" / ".tokens"
+    token_dir.mkdir(parents=True, exist_ok=True)
+    client = make_data_client(token_dir)
+    bars = fetch_bars(client, "BRAI", start_ms, end_ms, ["PRE", "RTH"])
+    out = Path(__file__).resolve().parents[1] / "test" / "fixtures" / "brai-2026-10-28.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "symbol": "BRAI",
+        "date": "2026-10-28",
+        "sessions": ["PRE", "RTH"],
+        "bars": bars,
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {len(bars)} bars to {out.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

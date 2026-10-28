@@ -1,4 +1,21 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: gatekeeper-redis
+    restart: unless-stopped
+
+  webull-sidecar:
+    build: ./sidecar
+    container_name: gatekeeper-webull
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WEBULL_TOKEN_DIR=/tmp/webull-tokens
+    depends_on:
+      - redis
+
   gatekeeper:
     build: .
     container_name: gatekeeper
@@ -15,6 +32,10 @@ services:
       - KEY_PATH=/certs/key.pem
       - TOKEN_PATH=/data/tokens.json
       - PUBLIC_URL=https://gatekeeper.veilforge.org
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - webull-sidecar
 
 volumes:
   gatekeeper-data:

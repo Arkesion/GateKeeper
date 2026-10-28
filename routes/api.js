@@ -26,6 +26,7 @@ module.exports = function registerRoutes(app, deps) {
     if (!deps.getAuthenticated()) await ensureSchwabAuth();
     res.json({
       authenticated: deps.getAuthenticated(),
+      provider: config.marketDataProvider,
       token_store: TOKEN_FILE,
       last_successful_fetch: deps.getLastSuccessfulFetch(),
       rate_limit_status: deps.getRateLimitStatus(),

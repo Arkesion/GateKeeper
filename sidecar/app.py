@@ -1,0 +1,388 @@
+"""Webull market-data sidecar. Publishes bars and L1 quotes to Redis.
+
+Trade prints build provisional 1-minute bars. When a minute closes, the HTTP
+bar overwrites that minute. No order placement, modification, or cancellation.
+Historical tick backfill and gRPC order events are later phases.
+"""
+
+import json
+import logging
+import os
+import signal
+import threading
+import time
+from datetime import datetime, timezone
+
+import redis
+
+from bars import (
+    MinuteBarBuilder,
+    quote_from_trade,
+    session_window,
+    snapshot_trade,
+    tick_print,
+)
+from rate_limit import RateLimiter
+from webull_data import credentials, fetch_bars, fetch_closed_bars, fetch_quote, make_data_client
+
+LOG = logging.getLogger("gatekeeper.sidecar")
+WATCH_LIMIT = 3
+SESSION_ID = "gk-sidecar"
+RECONCILE_DELAYS = (2, 3)
+
+
+class Sidecar:
+    def __init__(self):
+        self.limiter = RateLimiter()
+        self.redis = None
+        self.data = None
+        self.stream = None
+        self.connected = threading.Event()
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.order = []
+        self.builders = {}
+        self.quotes = {}
+        self.subscribed = set()
+        self.logged_sessions = set()
+
+    def run(self):
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(message)s",
+        )
+        logging.getLogger("webull").setLevel(logging.CRITICAL)
+        key, _secret, http_host, mqtt_host = credentials()
+        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
+        self.redis = redis.Redis.from_url(redis_url, decode_responses=True)
+        self.redis.ping()
+        if not key:
+            LOG.error("WEBULL_APP_KEY and WEBULL_APP_SECRET are required; sidecar idle")
+            while not self.stop.wait(3600):
+                pass
+            return
+
+        token_dir = os.environ.get("WEBULL_TOKEN_DIR", "/tmp/webull-tokens")
+        os.makedirs(token_dir, exist_ok=True)
+        self.data = make_data_client(token_dir)
+        self._start_stream(key, http_host, mqtt_host, token_dir)
+        threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True).start()
+        LOG.info("sidecar ready http=%s mqtt=%s", http_host, mqtt_host)
+        self._commands()
+
+    def _start_stream(self, key, http_host, mqtt_host, token_dir):
+        from webull.data.data_streaming_client import DataStreamingClient
+
+        _key, secret, _http, _mqtt = credentials()
+        client = DataStreamingClient(
+            key,
+            secret,
+            "us",
+            SESSION_ID,
+            http_host=http_host,
+            mqtt_host=mqtt_host,
+        )
+        client.set_token_dir(token_dir)
+        client.on_connect_success = self._on_connect
+        client.on_quotes_message = self._on_message
+        client.on_disconnect = self._on_disconnect
+        self.stream = client
+        client.connect_and_loop_start(timeout=1, logger_enable=False)
+
+    def _on_connect(self, client, api_client, session_id):
+        self.connected.set()
+        LOG.info("mqtt connected session=%s", session_id)
+        with self.lock:
+            symbols = list(self.order)
+        for symbol in symbols:
+            try:
+                self._subscribe(symbol)
+            except Exception as exc:
+                LOG.error("resubscribe %s failed: %s", symbol, exc)
+
+    def _on_disconnect(self, client, userdata, *args):
+        self.connected.clear()
+        with self.lock:
+            self.subscribed.clear()
+        LOG.warning("mqtt disconnected rc=%s", args[0] if args else None)
+
+    def _on_message(self, client, topic, payload):
+        items = payload if isinstance(payload, list) else [payload]
+        if topic == "tick":
+            for tick in items:
+                self._on_tick(tick)
+            return
+        if topic == "snapshot":
+            for snap in items:
+                self._on_snapshot(snap)
+
+    def _on_tick(self, tick):
+        symbol, price, size, trade_ms, bucket, session = tick_print(tick)
+        if session and session not in self.logged_sessions:
+            self.logged_sessions.add(str(session))
+            LOG.info("tick session label=%s", session)
+        if not symbol or price is None:
+            return
+        with self.lock:
+            builder = self.builders.get(symbol)
+            if builder is None:
+                return
+            closed = builder.on_print(price, size, trade_ms, bucket)
+            prev = self.quotes.get(symbol) or {}
+            quote = quote_from_trade(
+                price,
+                prev.get("closePrice"),
+                prev.get("bidPrice"),
+                prev.get("askPrice"),
+            )
+            self.quotes[symbol] = quote
+            forming = dict(builder.forming) if builder.forming else None
+            rows = builder.rows() if closed is not None else None
+            provisional = dict(closed) if closed is not None else None
+        self._publish_live(symbol, quote, forming, closed, rows)
+        if provisional is not None:
+            threading.Thread(
+                target=self._reconcile,
+                args=(symbol, provisional["datetime"]),
+                name=f"reconcile-{symbol}",
+                daemon=True,
+            ).start()
+
+    def _on_snapshot(self, snap):
+        price, _cum, _trade_ms, pre_close, _bucket, session = snapshot_trade(snap)
+        symbol = getattr(getattr(snap, "basic", None), "symbol", None)
+        if symbol:
+            symbol = symbol.upper()
+        if session and session not in self.logged_sessions:
+            self.logged_sessions.add(session)
+            LOG.info("snapshot session label=%s", session)
+        if not symbol:
+            return
+        with self.lock:
+            if symbol not in self.builders:
+                return
+            prev = self.quotes.get(symbol) or {}
+            last = prev.get("lastPrice")
+            if last is None:
+                last = price
+            if pre_close is None:
+                pre_close = prev.get("closePrice")
+            quote = quote_from_trade(
+                last,
+                pre_close,
+                prev.get("bidPrice"),
+                prev.get("askPrice"),
+            )
+            self.quotes[symbol] = quote
+        self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
+        self.redis.publish(
+            f"gk:live:{symbol}",
+            json.dumps({"quote": quote, "forming": None, "closed": None}),
+        )
+
+    def _publish_live(self, symbol, quote, forming, closed, rows):
+        self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
+        if rows is not None:
+            self.redis.set(f"gk:bars:{symbol}", json.dumps(rows))
+        self.redis.publish(
+            f"gk:live:{symbol}",
+            json.dumps({"quote": quote, "forming": forming, "closed": closed}),
+        )
+
+    def _reconcile(self, symbol, minute_ms):
+        """Refetch the last 3 closed bars in one call. Retry once if the newest is missing."""
+        official = []
+        for delay in RECONCILE_DELAYS:
+            if self.stop.wait(delay):
+                return
+            try:
+                official = fetch_closed_bars(self.data, symbol, minute_ms, limiter=self.limiter)
+            except Exception as exc:
+                LOG.warning("reconcile %s %s failed: %s", symbol, minute_ms, exc)
+                official = []
+            if any(bar["datetime"] == minute_ms for bar in official):
+                break
+        if not any(bar["datetime"] == minute_ms for bar in official):
+            LOG.warning("reconcile %s %s: newest HTTP bar missing", symbol, minute_ms)
+        if not official:
+            return
+        with self.lock:
+            builder = self.builders.get(symbol)
+            if builder is None:
+                return
+            changed = builder.upsert_official(official)
+            if not changed:
+                return
+            rows = builder.rows()
+            quote = self.quotes.get(symbol)
+            forming = dict(builder.forming) if builder.forming else None
+        self.redis.set(f"gk:bars:{symbol}", json.dumps(rows))
+        self.redis.publish(
+            f"gk:live:{symbol}",
+            json.dumps({"quote": quote, "forming": forming, "closed": None, "updates": changed}),
+        )
+        LOG.info("reconciled %s minutes=%s", symbol, [bar["datetime"] for bar in changed])
+
+    def _heartbeat(self):
+        while not self.stop.is_set():
+            stamp = datetime.now(timezone.utc).isoformat()
+            try:
+                self.redis.set("gk:heartbeat", stamp)
+                self.redis.publish("gk:heartbeat", stamp)
+            except Exception as exc:
+                LOG.error("heartbeat failed: %s", exc)
+            self.stop.wait(1)
+
+    def _commands(self):
+        while not self.stop.is_set():
+            item = self.redis.blpop("gk:cmd", timeout=1)
+            if not item:
+                continue
+            _key, raw = item
+            try:
+                cmd = json.loads(raw)
+            except json.JSONDecodeError:
+                LOG.error("ignored malformed command")
+                continue
+            cmd_id = str(cmd.get("id") or "")
+            try:
+                op = cmd.get("op")
+                if op == "watch":
+                    self._watch(cmd)
+                elif op == "unwatch":
+                    self._unwatch(str(cmd.get("symbol") or "").upper())
+                else:
+                    raise RuntimeError(f"unknown op")
+                if cmd_id:
+                    self._ack(cmd_id, True, None)
+            except Exception as exc:
+                LOG.error("command failed: %s", exc)
+                if cmd_id:
+                    self._ack(cmd_id, False, str(exc))
+
+    def _watch(self, cmd):
+        symbol = str(cmd.get("symbol") or "").upper()
+        if not symbol:
+            raise RuntimeError("symbol required")
+        sessions = cmd.get("sessions") or ["PRE", "RTH"]
+        with self.lock:
+            already = symbol in self.builders
+            needs_sub = symbol not in self.subscribed
+        if already:
+            self._write_symbol(symbol)
+            if needs_sub:
+                if not self.connected.wait(20):
+                    raise RuntimeError("mqtt not connected")
+                self._subscribe(symbol)
+            return
+        start_ms, end_ms = session_window()
+        bars = fetch_bars(self.data, symbol, start_ms, end_ms, sessions, self.limiter)
+        quote = None
+        try:
+            quote = fetch_quote(self.data, symbol, self.limiter)
+        except Exception as exc:
+            LOG.warning("quote seed %s failed: %s", symbol, exc)
+        builder = MinuteBarBuilder()
+        builder.seed(bars, int(time.time() * 1000))
+        with self.lock:
+            if symbol not in self.order and len(self.order) >= WATCH_LIMIT:
+                self._evict_oldest()
+            self.builders[symbol] = builder
+            if quote:
+                self.quotes[symbol] = quote
+        self._write_symbol(symbol)
+        with self.lock:
+            if symbol not in self.order:
+                self.order.append(symbol)
+        if not self.connected.wait(20):
+            raise RuntimeError("mqtt not connected")
+        self._subscribe(symbol)
+        LOG.info("watching %s bars=%s", symbol, len(bars))
+
+    def _write_symbol(self, symbol):
+        with self.lock:
+            builder = self.builders.get(symbol)
+            quote = self.quotes.get(symbol)
+            rows = builder.rows() if builder else []
+        self.redis.set(f"gk:bars:{symbol}", json.dumps(rows))
+        if quote:
+            self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
+
+    def _evict_oldest(self):
+        if not self.order:
+            return
+        old = self.order.pop(0)
+        self.builders.pop(old, None)
+        self.quotes.pop(old, None)
+        self.subscribed.discard(old)
+        try:
+            self._unsubscribe(old)
+        except Exception as exc:
+            LOG.warning("unsubscribe %s failed: %s", old, exc)
+        self.redis.delete(f"gk:bars:{old}", f"gk:quote:{old}")
+        LOG.info("evicted %s", old)
+
+    def _unwatch(self, symbol):
+        with self.lock:
+            if symbol in self.order:
+                self.order.remove(symbol)
+            self.builders.pop(symbol, None)
+            self.quotes.pop(symbol, None)
+            self.subscribed.discard(symbol)
+        if symbol:
+            try:
+                self._unsubscribe(symbol)
+            except Exception as exc:
+                LOG.warning("unsubscribe %s failed: %s", symbol, exc)
+            self.redis.delete(f"gk:bars:{symbol}", f"gk:quote:{symbol}")
+
+    def _subscribe(self, symbol):
+        from webull.data.common.category import Category
+        from webull.data.common.subscribe_type import SubscribeType
+        from webull.data.quotes.market_streaming_data import MarketDataStreaming
+
+        self.limiter.acquire("subscribe")
+        streaming = MarketDataStreaming(self.stream.api_client)
+        response = streaming.subscribe(
+            self.stream.get_session_id(),
+            [symbol],
+            Category.US_STOCK.name,
+            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name],
+        )
+        status = getattr(response, "status_code", None)
+        if status != 200:
+            raise RuntimeError(f"subscribe failed status={status}")
+        with self.lock:
+            self.subscribed.add(symbol)
+        LOG.info("subscribed SNAPSHOT+TICK %s", symbol)
+
+    def _unsubscribe(self, symbol):
+        from webull.data.common.category import Category
+        from webull.data.common.subscribe_type import SubscribeType
+        from webull.data.quotes.market_streaming_data import MarketDataStreaming
+
+        self.limiter.acquire("subscribe")
+        streaming = MarketDataStreaming(self.stream.api_client)
+        streaming.unsubscribe(
+            self.stream.get_session_id(),
+            [symbol],
+            Category.US_STOCK.name,
+            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name],
+        )
+
+    def _ack(self, cmd_id, ok, error):
+        self.redis.set(f"gk:ack:{cmd_id}", json.dumps({"ok": ok, "error": error}), ex=60)
+
+    def shutdown(self, *_args):
+        self.stop.set()
+
+
+def main():
+    sidecar = Sidecar()
+    signal.signal(signal.SIGTERM, sidecar.shutdown)
+    signal.signal(signal.SIGINT, sidecar.shutdown)
+    sidecar.run()
+
+
+if __name__ == "__main__":
+    main()

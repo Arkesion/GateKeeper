@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Log provisional tick bars against the last three HTTP bars.
+
+Run during a live session:
+
+    python scripts/compare-bars BRAI
+
+Uses its own MQTT session id. Does not write Redis and does not place orders.
+"""
+
+import logging
+import os
+import sys
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sidecar"))
+
+from webull.data.common.category import Category
+from webull.data.common.subscribe_type import SubscribeType
+from webull.data.data_streaming_client import DataStreamingClient
+
+from bars import MINUTE_MS, MinuteBarBuilder, tick_print
+from webull_data import credentials, fetch_closed_bars, make_data_client
+
+ET = ZoneInfo("America/New_York")
+FIELDS = ("open", "high", "low", "close", "volume")
+
+
+def et_label(ms):
+    return datetime.fromtimestamp(ms / 1000, ET).strftime("%Y-%m-%d %H:%M ET")
+
+
+def ohlcv(bar):
+    return " ".join(f"{name[0].upper()}={bar[name]}" for name in FIELDS)
+
+
+def differing(left, right):
+    return [name for name in FIELDS if left.get(name) != right.get(name)]
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("usage: python scripts/compare-bars SYMBOL", file=sys.stderr)
+        return 2
+    symbol = sys.argv[1].upper()
+    key, secret, http_host, mqtt_host = credentials()
+    if not key or not secret:
+        print("WEBULL_APP_KEY and WEBULL_APP_SECRET are required", file=sys.stderr)
+        return 2
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("webull").setLevel(logging.CRITICAL)
+    session_id = f"compare-bars-{os.getpid()}"
+    token_dir = os.environ.get(
+        "WEBULL_TOKEN_DIR",
+        str(Path(__file__).resolve().parents[1] / "sidecar" / ".tokens"),
+    )
+    os.makedirs(token_dir, exist_ok=True)
+    data = make_data_client(token_dir)
+    builder = MinuteBarBuilder()
+    lock = threading.Lock()
+    totals = {"compared": 0, "mismatches": 0, "missing": 0}
+
+    def compare(stream_bars, end_minute):
+        label = et_label(end_minute)
+        try:
+            time.sleep(2)
+            official = fetch_closed_bars(data, symbol, end_minute)
+            if not any(bar["datetime"] == end_minute for bar in official):
+                time.sleep(3)
+                official = fetch_closed_bars(data, symbol, end_minute)
+        except Exception as exc:
+            print(f"{label} http error {exc}", flush=True)
+            return
+        by_minute = {bar["datetime"]: bar for bar in official}
+        for stream_bar in stream_bars:
+            minute_label = et_label(stream_bar["datetime"])
+            http_bar = by_minute.get(stream_bar["datetime"])
+            with lock:
+                totals["compared"] += 1
+                if http_bar is None:
+                    totals["missing"] += 1
+                    print(f"{minute_label} stream {ohlcv(stream_bar)} | http missing", flush=True)
+                    continue
+                fields = differing(stream_bar, http_bar)
+                if fields:
+                    totals["mismatches"] += 1
+                    print(
+                        f"{minute_label} stream {ohlcv(stream_bar)} | http {ohlcv(http_bar)} | MISMATCH {','.join(fields)}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"{minute_label} stream {ohlcv(stream_bar)} | http {ohlcv(http_bar)} | MATCH",
+                        flush=True,
+                    )
+
+    client = DataStreamingClient(
+        key,
+        secret,
+        "us",
+        session_id,
+        http_host=http_host,
+        mqtt_host=mqtt_host,
+    )
+    client.set_token_dir(token_dir)
+
+    def on_connect(stream, api_client, connected_session):
+        print(f"connect session={connected_session} symbol={symbol}", flush=True)
+        stream.subscribe([symbol], Category.US_STOCK.name, [SubscribeType.TICK.name])
+
+    def on_message(stream, topic, payload):
+        if topic != "tick":
+            return
+        items = payload if isinstance(payload, list) else [payload]
+        for tick in items:
+            _tick_symbol, price, size, trade_ms, bucket, _session = tick_print(tick)
+            if price is None:
+                continue
+            with lock:
+                closed = builder.on_print(price, size, trade_ms, bucket)
+                if closed is None:
+                    snapshot = None
+                else:
+                    end_minute = closed["datetime"]
+                    start_minute = end_minute - 2 * MINUTE_MS
+                    snapshot = [
+                        dict(bar) for bar in builder.closed
+                        if start_minute <= bar["datetime"] <= end_minute
+                    ]
+            if snapshot:
+                threading.Thread(
+                    target=compare,
+                    args=(snapshot, snapshot[-1]["datetime"]),
+                    name="compare-minute",
+                    daemon=True,
+                ).start()
+
+    def on_disconnect(stream, userdata, *args):
+        print(f"disconnect rc={args[0] if args else None}", flush=True)
+
+    client.on_connect_success = on_connect
+    client.on_quotes_message = on_message
+    client.on_disconnect = on_disconnect
+    print(f"starting compare-bars symbol={symbol} session={session_id}", flush=True)
+    try:
+        client.connect_and_loop_forever(timeout=1, logger_enable=False)
+    except KeyboardInterrupt:
+        print("stopped", flush=True)
+    finally:
+        print(
+            f"compared={totals['compared']} mismatches={totals['mismatches']} missing={totals['missing']}",
+            flush=True,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

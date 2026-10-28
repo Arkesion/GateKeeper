@@ -10,6 +10,7 @@ const { config } = store;
 const auth = require('./lib/auth');
 const schwab = require('./lib/schwab');
 const state = require('./lib/state');
+const { getProvider } = require('./lib/providers');
 const halts = require('./lib/halts');
 const registerRoutes = require('./routes/api');
 
@@ -33,12 +34,30 @@ async function stateHandler(req, res) {
     });
   }
 
-  if (!(await auth.ensureSchwabAuth())) {
-    return res.json({ status: 'auth_failed' });
+  if (config.marketDataProvider !== 'webull') {
+    if (!(await auth.ensureSchwabAuth())) {
+      return res.json({ status: 'auth_failed' });
+    }
   }
 
-  state.setActiveSymbol(sym);
-  state.triggerMinuteEdgeRefresh(sym);
+  if (config.marketDataProvider === 'webull' && state.isDataStale()) {
+    return res.json({ status: 'data_stale' });
+  }
+
+  try {
+    await state.setActiveSymbol(sym);
+  } catch (err) {
+    console.error(`Market data (${sym}):`, err.message);
+    return res.json({ status: 'insufficient_data', missing: ['market_data'] });
+  }
+
+  if (config.marketDataProvider === 'webull' && state.isDataStale()) {
+    return res.json({ status: 'data_stale' });
+  }
+
+  if (config.marketDataProvider !== 'webull') {
+    state.triggerMinuteEdgeRefresh(sym);
+  }
 
   const cached = store.responseCache[sym];
   if (cached) {
@@ -64,13 +83,18 @@ registerRoutes(app, {
   QUOTE_POLL_MS: config.quotePollMs,
   CANDLE_POLL_MS: config.candlePollMs,
   config,
-  ensureSchwabAuth: auth.ensureSchwabAuth,
+  ensureSchwabAuth: async () => {
+    if (config.marketDataProvider === 'webull') return true;
+    return auth.ensureSchwabAuth();
+  },
   redirectToSchwabLogin: auth.redirectToSchwabLogin,
   handleOAuthCallback: auth.handleOAuthCallback,
   getMarketSession: require('./lib/session').getMarketSession,
   isGatekeeperOpen: require('./lib/session').isGatekeeperOpen,
   getSchwabCallsPerMinute: schwab.getSchwabCallsPerMinute,
-  getAuthenticated: () => store.authenticated,
+  getAuthenticated: () => (
+    config.marketDataProvider === 'webull' ? true : store.authenticated
+  ),
   getLastSuccessfulFetch: () => store.lastSuccessfulFetch,
   getRateLimitStatus: () => store.rateLimitStatus,
   stateHandler
@@ -94,6 +118,9 @@ let httpServer = null;
 function shutdown(signal) {
   console.log(`${signal}: shutting down Gatekeeper`);
   state.stopSymbolRefresh();
+  if (config.marketDataProvider === 'webull') {
+    getProvider().stop().catch(() => {});
+  }
   if (store.proactiveRefreshTimer) {
     clearInterval(store.proactiveRefreshTimer);
     store.proactiveRefreshTimer = null;
@@ -127,8 +154,19 @@ function listen() {
   }
 }
 
-initAuthOnStartup()
-  .catch(err => console.error('Startup auth init failed:', err.message))
+async function init() {
+  if (config.marketDataProvider === 'webull') {
+    const provider = getProvider();
+    provider.onUpdate = (symbol, data) => state.applyMarketData(symbol, data);
+    await provider.start();
+    console.log('Webull provider reading Redis');
+    return;
+  }
+  await initAuthOnStartup();
+}
+
+init()
+  .catch(err => console.error('Startup init failed:', err.message))
   .finally(() => {
     halts.startNasdaqHaltPoll();
     listen();

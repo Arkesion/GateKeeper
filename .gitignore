@@ -1,6 +1,11 @@
 .env
 node_modules/
 tokens.json
+__pycache__/
+sidecar/.tokens/
+sidecar/.venv/
+webull_data_streaming_sdk.log
+*.log
 
 # Documentation — runtime deploy only needs server.js + public/ (+ lib/, routes/)
 *.md

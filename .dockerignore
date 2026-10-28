@@ -3,3 +3,6 @@
 
 .git
 .gitignore
+node_modules
+sidecar/.tokens
+**/*.log

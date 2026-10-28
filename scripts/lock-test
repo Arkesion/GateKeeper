@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Subscribe to one ticker's L1 snapshot stream and log every message and disconnect.
+
+Run this while the Webull app is open:
+
+    python scripts/lock-test BRAI
+
+Uses its own MQTT session id so it does not replace the sidecar connection.
+"""
+
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sidecar"))
+
+from webull.data.common.category import Category
+from webull.data.common.subscribe_type import SubscribeType
+from webull.data.data_streaming_client import DataStreamingClient
+
+from webull_data import credentials
+
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("usage: python scripts/lock-test SYMBOL", file=sys.stderr)
+        return 2
+    symbol = sys.argv[1].upper()
+    key, secret, http_host, mqtt_host = credentials()
+    if not key or not secret:
+        print("WEBULL_APP_KEY and WEBULL_APP_SECRET are required", file=sys.stderr)
+        return 2
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("webull").setLevel(logging.CRITICAL)
+    session_id = f"lock-test-{os.getpid()}"
+    token_dir = os.environ.get("WEBULL_TOKEN_DIR", str(Path(__file__).resolve().parents[1] / "sidecar" / ".tokens"))
+    os.makedirs(token_dir, exist_ok=True)
+
+    client = DataStreamingClient(
+        key,
+        secret,
+        "us",
+        session_id,
+        http_host=http_host,
+        mqtt_host=mqtt_host,
+    )
+    client.set_token_dir(token_dir)
+
+    def on_connect(stream, api_client, connected_session):
+        print(f"{stamp()} connect session={connected_session}", flush=True)
+        stream.subscribe(
+            [symbol],
+            Category.US_STOCK.name,
+            [SubscribeType.SNAPSHOT.name],
+        )
+
+    def on_message(stream, topic, payload):
+        print(f"{stamp()} message topic={topic} {payload}", flush=True)
+
+    def on_disconnect(stream, userdata, *args):
+        print(f"{stamp()} disconnect rc={args[0] if args else None}", flush=True)
+
+    client.on_connect_success = on_connect
+    client.on_quotes_message = on_message
+    client.on_disconnect = on_disconnect
+    print(f"{stamp()} starting lock-test symbol={symbol} session={session_id}", flush=True)
+    try:
+        client.connect_and_loop_forever(timeout=1, logger_enable=False)
+    except KeyboardInterrupt:
+        print(f"{stamp()} disconnect local-interrupt", flush=True)
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
