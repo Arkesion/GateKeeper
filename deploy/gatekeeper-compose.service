@@ -1,0 +1,20 @@
+[Unit]
+Description=Recreate Gatekeeper once the Tailscale address is up
+After=docker.service tailscaled.service network-online.target
+Wants=docker.service tailscaled.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ark
+Group=ark
+WorkingDirectory=/home/ark/Gatekeeper
+# Docker applies restart policies only after a successful start, and Docker 29
+# can leave a container running with no network when the Tailscale address is
+# missing. Wait, then recreate the published service.
+ExecStartPre=/bin/bash -c 'n=0; while [ "$$n" -lt 60 ]; do ip -4 addr show dev tailscale0 2>/dev/null | grep -q "100.96.105.85" && exit 0; n=$$((n+1)); sleep 2; done; echo "timed out waiting for 100.96.105.85 on tailscale0" >&2; exit 1'
+ExecStart=/usr/bin/docker compose up -d --force-recreate gatekeeper
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
