@@ -21,7 +21,7 @@ services:
     container_name: gatekeeper
     restart: unless-stopped
     ports:
-      - "443:3000"
+      - "100.96.105.85:443:3000"
     volumes:
       - /etc/gatekeeper/certs:/certs:ro
       - gatekeeper-data:/data
