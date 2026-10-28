@@ -1,15 +1,18 @@
 """1-minute bar normalization and live bar building. Market data only."""
 
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 PRE_START = 4 * 60
+OVERNIGHT_EVENING = 20 * 60
 RTH_START = 9 * 60 + 30
 RTH_END = 16 * 60
+_CLOCK_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$")
 
 
-def parse_time_ms(value):
+def parse_time_ms(value, now=None):
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
@@ -18,12 +21,47 @@ def parse_time_ms(value):
     text = str(value).strip()
     if text.isdigit():
         return parse_time_ms(int(text))
+    clock = _clock_on_exchange_date(text, now)
+    if clock is not None:
+        return int(clock.timestamp() * 1000)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
-    dt = datetime.fromisoformat(text)
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ET)
     return int(dt.timestamp() * 1000)
+
+
+def _clock_on_exchange_date(text, now=None):
+    """HH:MM:SS on today's America/New_York date, rolled across midnight overnight."""
+    match = _CLOCK_RE.match(text)
+    if match is None:
+        return None
+    hour, minute, second, frac = match.groups()
+    micro = int((frac + "000000")[:6]) if frac else 0
+    now_et = now.astimezone(ET) if now is not None else datetime.now(ET)
+    if now_et.tzinfo is None:
+        now_et = now_et.replace(tzinfo=ET)
+    candidate = datetime(
+        now_et.year,
+        now_et.month,
+        now_et.day,
+        int(hour),
+        int(minute),
+        int(second),
+        micro,
+        tzinfo=ET,
+    )
+    clock_mins = int(hour) * 60 + int(minute)
+    now_mins = now_et.hour * 60 + now_et.minute
+    if clock_mins >= OVERNIGHT_EVENING and now_mins < PRE_START:
+        candidate -= timedelta(days=1)
+    elif clock_mins < PRE_START and now_mins >= OVERNIGHT_EVENING:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def money(value):
@@ -330,10 +368,7 @@ def snapshot_trade(snap):
         price = last_price if last_price is not None else ext_price
         cum = _num(getattr(snap, "volume", None) if bucket == "RTH" else getattr(snap, "ext_volume", None))
         trade_ms = getattr(snap, "last_trade_time", None) or getattr(snap, "ext_trade_time", None) or timestamp
-    trade_ms = int(trade_ms) if trade_ms else None
-    if trade_ms is not None and trade_ms < 10**12:
-        trade_ms *= 1000
-    return price, cum, trade_ms, pre_close, bucket, session
+    return price, cum, parse_time_ms(trade_ms), pre_close, bucket, session
 
 
 def _num(value):

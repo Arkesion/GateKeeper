@@ -5,7 +5,7 @@ Run during a live session:
 
     python scripts/compare-bars BRAI
 
-Uses its own MQTT session id. Does not write Redis and does not place orders.
+Uses a new MQTT client id on every connection attempt. Does not write Redis and does not place orders.
 """
 
 import logging
@@ -21,13 +21,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sidecar"))
 
 from webull.data.common.category import Category
 from webull.data.common.subscribe_type import SubscribeType
-from webull.data.data_streaming_client import DataStreamingClient
 
 from bars import MINUTE_MS, MinuteBarBuilder, tick_print
-from webull_data import credentials, fetch_closed_bars, make_data_client
+from webull_data import (
+    connect_failure,
+    credentials,
+    disconnect_reason,
+    fetch_closed_bars,
+    make_data_client,
+    make_streaming_client,
+    mqtt_client_id,
+    reconnect_wait,
+    retry_subscribe,
+)
 
 ET = ZoneInfo("America/New_York")
 FIELDS = ("open", "high", "low", "close", "volume")
+PRICE_FIELDS = ("open", "high", "low", "close")
+PRICE_MISMATCH = 0.01
 
 
 def et_label(ms):
@@ -38,8 +49,30 @@ def ohlcv(bar):
     return " ".join(f"{name[0].upper()}={bar[name]}" for name in FIELDS)
 
 
-def differing(left, right):
-    return [name for name in FIELDS if left.get(name) != right.get(name)]
+def http_signature(bar):
+    return tuple(bar.get(name) for name in FIELDS)
+
+
+def classify(stream_bar, http_bar):
+    big = []
+    small = False
+    for name in PRICE_FIELDS:
+        diff = abs(float(stream_bar[name]) - float(http_bar[name]))
+        if diff >= PRICE_MISMATCH:
+            big.append(name)
+        elif diff > 0:
+            small = True
+    ratio = None
+    http_vol = float(http_bar.get("volume") or 0)
+    if http_vol > 0:
+        ratio = float(stream_bar.get("volume") or 0) / http_vol
+    if big:
+        label = "MISMATCH " + ",".join(big)
+    elif small:
+        label = "MATCH-PRICE"
+    else:
+        label = "MATCH"
+    return label, ratio, bool(big)
 
 
 def main():
@@ -47,14 +80,13 @@ def main():
         print("usage: python scripts/compare-bars SYMBOL", file=sys.stderr)
         return 2
     symbol = sys.argv[1].upper()
-    key, secret, http_host, mqtt_host = credentials()
+    key, secret, _http_host, _mqtt_host = credentials()
     if not key or not secret:
         print("WEBULL_APP_KEY and WEBULL_APP_SECRET are required", file=sys.stderr)
         return 2
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("webull").setLevel(logging.CRITICAL)
-    session_id = f"compare-bars-{os.getpid()}"
     token_dir = os.environ.get(
         "WEBULL_TOKEN_DIR",
         str(Path(__file__).resolve().parents[1] / "sidecar" / ".tokens"),
@@ -63,7 +95,8 @@ def main():
     data = make_data_client(token_dir)
     builder = MinuteBarBuilder()
     lock = threading.Lock()
-    totals = {"compared": 0, "mismatches": 0, "missing": 0}
+    totals = {"compared": 0, "mismatches": 0, "missing": 0, "volume_ratios": []}
+    logged_http = {}
 
     def compare(stream_bars, end_minute):
         label = et_label(end_minute)
@@ -78,42 +111,35 @@ def main():
             return
         by_minute = {bar["datetime"]: bar for bar in official}
         for stream_bar in stream_bars:
-            minute_label = et_label(stream_bar["datetime"])
-            http_bar = by_minute.get(stream_bar["datetime"])
+            minute = stream_bar["datetime"]
+            minute_label = et_label(minute)
+            http_bar = by_minute.get(minute)
+            signature = None if http_bar is None else http_signature(http_bar)
             with lock:
+                if minute in logged_http and logged_http[minute] == signature:
+                    continue
+                logged_http[minute] = signature
                 totals["compared"] += 1
                 if http_bar is None:
                     totals["missing"] += 1
-                    print(f"{minute_label} stream {ohlcv(stream_bar)} | http missing", flush=True)
-                    continue
-                fields = differing(stream_bar, http_bar)
-                if fields:
-                    totals["mismatches"] += 1
-                    print(
-                        f"{minute_label} stream {ohlcv(stream_bar)} | http {ohlcv(http_bar)} | MISMATCH {','.join(fields)}",
-                        flush=True,
-                    )
+                    line = f"{minute_label} stream {ohlcv(stream_bar)} | http missing"
                 else:
-                    print(
-                        f"{minute_label} stream {ohlcv(stream_bar)} | http {ohlcv(http_bar)} | MATCH",
-                        flush=True,
-                    )
-
-    client = DataStreamingClient(
-        key,
-        secret,
-        "us",
-        session_id,
-        http_host=http_host,
-        mqtt_host=mqtt_host,
-    )
-    client.set_token_dir(token_dir)
-
-    def on_connect(stream, api_client, connected_session):
-        print(f"connect session={connected_session} symbol={symbol}", flush=True)
-        stream.subscribe([symbol], Category.US_STOCK.name, [SubscribeType.TICK.name])
+                    verdict, ratio, mismatch = classify(stream_bar, http_bar)
+                    if mismatch:
+                        totals["mismatches"] += 1
+                    if ratio is not None:
+                        totals["volume_ratios"].append(ratio)
+                    vol = f" vol={ratio:.2f}" if ratio is not None else ""
+                    line = f"{minute_label} stream {ohlcv(stream_bar)} | http {ohlcv(http_bar)} | {verdict}{vol}"
+            print(line, flush=True)
 
     def on_message(stream, topic, payload):
+        try:
+            _on_tick_message(topic, payload)
+        except Exception as exc:
+            print(f"message error {type(exc).__name__}", flush=True)
+
+    def _on_tick_message(topic, payload):
         if topic != "tick":
             return
         items = payload if isinstance(payload, list) else [payload]
@@ -140,20 +166,72 @@ def main():
                     daemon=True,
                 ).start()
 
-    def on_disconnect(stream, userdata, *args):
-        print(f"disconnect rc={args[0] if args else None}", flush=True)
-
-    client.on_connect_success = on_connect
-    client.on_quotes_message = on_message
-    client.on_disconnect = on_disconnect
-    print(f"starting compare-bars symbol={symbol} session={session_id}", flush=True)
+    print(f"starting compare-bars symbol={symbol}", flush=True)
+    attempt = 0
+    delay = 1
     try:
-        client.connect_and_loop_forever(timeout=1, logger_enable=False)
+        while True:
+            attempt += 1
+            session_id = mqtt_client_id("compare-bars", attempt)
+            closed = threading.Event()
+            held = {"ok": False}
+            client = make_streaming_client(session_id, token_dir)
+
+            def on_connect(stream, api_client, connected_session, _held=held, _closed=closed):
+                print(
+                    f"connect rc=0 reason=Connection successful client_id={connected_session}",
+                    flush=True,
+                )
+                _held["ok"] = True
+
+                def subscribe():
+                    stream.subscribe([symbol], Category.US_STOCK.name, [SubscribeType.TICK.name])
+
+                def on_error(http, code, msg):
+                    print(
+                        f"subscribe http={http} code={code} msg={msg} client_id={connected_session}",
+                        flush=True,
+                    )
+
+                threading.Thread(
+                    target=retry_subscribe,
+                    args=(stream, subscribe, lambda: not _closed.is_set(), on_error),
+                    name="subscribe",
+                    daemon=True,
+                ).start()
+
+            def on_disconnect(stream, userdata, *args, _sid=session_id):
+                rc = args[0] if args else None
+                print(
+                    f"disconnect rc={rc} reason={disconnect_reason(rc)} client_id={_sid}",
+                    flush=True,
+                )
+
+            client.on_connect_success = on_connect
+            client.on_quotes_message = on_message
+            client.on_disconnect = on_disconnect
+            try:
+                client.connect_and_loop_forever(timeout=1, logger_enable=False)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                rc, reason = connect_failure(exc)
+                print(f"connect rc={rc} reason={reason} client_id={session_id}", flush=True)
+            finally:
+                closed.set()
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+            sleep_for, delay = reconnect_wait(held["ok"], delay)
+            time.sleep(sleep_for)
     except KeyboardInterrupt:
         print("stopped", flush=True)
     finally:
+        ratios = totals["volume_ratios"]
+        average = f"{sum(ratios) / len(ratios):.2f}" if ratios else "none"
         print(
-            f"compared={totals['compared']} mismatches={totals['mismatches']} missing={totals['missing']}",
+            f"compared={totals['compared']} mismatches={totals['mismatches']} missing={totals['missing']} avg_volume_ratio={average}",
             flush=True,
         )
     return 0

@@ -23,11 +23,22 @@ from bars import (
     tick_print,
 )
 from rate_limit import RateLimiter
-from webull_data import credentials, fetch_bars, fetch_closed_bars, fetch_quote, make_data_client
+from webull_data import (
+    connect_failure,
+    credentials,
+    disconnect_reason,
+    fetch_bars,
+    fetch_closed_bars,
+    fetch_quote,
+    make_data_client,
+    make_streaming_client,
+    mqtt_client_id,
+    reconnect_wait,
+    retry_subscribe,
+)
 
 LOG = logging.getLogger("gatekeeper.sidecar")
 WATCH_LIMIT = 3
-SESSION_ID = "gk-sidecar"
 RECONCILE_DELAYS = (2, 3)
 
 
@@ -64,49 +75,126 @@ class Sidecar:
 
         token_dir = os.environ.get("WEBULL_TOKEN_DIR", "/tmp/webull-tokens")
         os.makedirs(token_dir, exist_ok=True)
+        self.token_dir = token_dir
         self.data = make_data_client(token_dir)
-        self._start_stream(key, http_host, mqtt_host, token_dir)
+        threading.Thread(target=self._mqtt_loop, name="mqtt", daemon=True).start()
         threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True).start()
         LOG.info("sidecar ready http=%s mqtt=%s", http_host, mqtt_host)
         self._commands()
 
-    def _start_stream(self, key, http_host, mqtt_host, token_dir):
-        from webull.data.data_streaming_client import DataStreamingClient
+    def _mqtt_loop(self):
+        attempt = 0
+        delay = 1
+        while not self.stop.is_set():
+            attempt += 1
+            session_id = mqtt_client_id("gk-sidecar", attempt)
+            previous = self.stream
+            if previous is not None:
+                try:
+                    previous.disconnect()
+                except Exception:
+                    pass
+                if self.stream is previous:
+                    self.stream = None
+            held = {"ok": False}
+            client = make_streaming_client(session_id, self.token_dir)
 
-        _key, secret, _http, _mqtt = credentials()
-        client = DataStreamingClient(
-            key,
-            secret,
-            "us",
-            SESSION_ID,
-            http_host=http_host,
-            mqtt_host=mqtt_host,
-        )
-        client.set_token_dir(token_dir)
-        client.on_connect_success = self._on_connect
-        client.on_quotes_message = self._on_message
-        client.on_disconnect = self._on_disconnect
-        self.stream = client
-        client.connect_and_loop_start(timeout=1, logger_enable=False)
+            def on_connect(stream, api_client, connected_session, _held=held):
+                _held["ok"] = True
+                self._on_connect(stream, api_client, connected_session)
+
+            def on_disconnect(stream, userdata, *args):
+                self._on_disconnect(stream, userdata, *args)
+
+            client.on_connect_success = on_connect
+            client.on_quotes_message = self._on_message
+            client.on_disconnect = on_disconnect
+            self.stream = client
+            try:
+                client.connect_and_loop_forever(timeout=1, logger_enable=False)
+            except Exception as exc:
+                rc, reason = connect_failure(exc)
+                LOG.warning("connect rc=%s reason=%s client_id=%s", rc, reason, session_id)
+            finally:
+                self.connected.clear()
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+                if self.stream is client:
+                    self.stream = None
+            if self.stop.is_set():
+                return
+            sleep_for, delay = reconnect_wait(held["ok"], delay)
+            if self.stop.wait(sleep_for):
+                return
 
     def _on_connect(self, client, api_client, session_id):
         self.connected.set()
-        LOG.info("mqtt connected session=%s", session_id)
-        with self.lock:
-            symbols = list(self.order)
-        for symbol in symbols:
-            try:
-                self._subscribe(symbol)
-            except Exception as exc:
-                LOG.error("resubscribe %s failed: %s", symbol, exc)
+        LOG.info("connect rc=0 reason=Connection successful client_id=%s", session_id)
+
+        def is_current():
+            return self.stream is client and not self.stop.is_set()
+
+        def subscribe_all():
+            with self.lock:
+                symbols = [symbol for symbol in self.order if symbol not in self.subscribed]
+            if not symbols:
+                return
+            failed = None
+            for symbol in symbols:
+                if not is_current():
+                    return
+                try:
+                    self._subscribe(symbol)
+                except Exception as exc:
+                    failed = exc
+                    self._log_subscribe_error(symbol, exc, session_id)
+            if failed is not None:
+                raise failed
+
+        threading.Thread(
+            target=retry_subscribe,
+            args=(client, subscribe_all, is_current, lambda *_args: None),
+            name="resubscribe",
+            daemon=True,
+        ).start()
+
+    def _log_subscribe_error(self, symbol, exc, session_id):
+        from webull.core.exception.exceptions import ServerException
+
+        if isinstance(exc, ServerException):
+            LOG.error(
+                "subscribe %s http=%s code=%s msg=%s client_id=%s",
+                symbol,
+                exc.get_http_status(),
+                exc.get_error_code(),
+                exc.get_error_msg(),
+                session_id,
+            )
+            return
+        LOG.error("subscribe %s failed %s client_id=%s", symbol, type(exc).__name__, session_id)
 
     def _on_disconnect(self, client, userdata, *args):
         self.connected.clear()
         with self.lock:
             self.subscribed.clear()
-        LOG.warning("mqtt disconnected rc=%s", args[0] if args else None)
+        rc = args[0] if args else None
+        session_id = client.get_session_id() if hasattr(client, "get_session_id") else None
+        LOG.warning(
+            "disconnect rc=%s reason=%s client_id=%s",
+            rc,
+            disconnect_reason(rc),
+            session_id,
+        )
 
     def _on_message(self, client, topic, payload):
+        try:
+            self._handle_message(topic, payload)
+        except Exception as exc:
+            LOG.error("message error %s", type(exc).__name__)
+
+    def _handle_message(self, topic, payload):
         items = payload if isinstance(payload, list) else [payload]
         if topic == "tick":
             for tick in items:
@@ -375,6 +463,12 @@ class Sidecar:
 
     def shutdown(self, *_args):
         self.stop.set()
+        client = self.stream
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
 
 
 def main():

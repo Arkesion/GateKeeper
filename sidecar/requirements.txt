@@ -1,3 +1,4 @@
 webull-openapi-python-sdk==3.0.4
+paho-mqtt==1.6.1
 redis==8.1.0
 tzdata==2026.6

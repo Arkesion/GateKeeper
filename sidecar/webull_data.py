@@ -1,7 +1,10 @@
 """Webull market-data HTTP. Does not import or call any order endpoint."""
 
 import json
+import logging
 import os
+import re
+import time
 from pathlib import Path
 
 from webull.core.client import ApiClient
@@ -53,6 +56,9 @@ def make_data_client(token_dir):
     api = ApiClient(key, secret, "us")
     api.add_endpoint("us", http_host)
     api.set_token_dir(str(token_dir))
+    silence_webull_logs()
+    api._stream_logger_set = True
+    api._file_logger_set = True
     return DataClient(api)
 
 
@@ -191,3 +197,143 @@ def _num(value):
     if value is None or value == "":
         return None
     return float(value)
+
+
+_HEADER_KEY = re.compile(r"(x-app-key)([\"'\s:=]+)([^\s\"',}]+)", re.IGNORECASE)
+_HEADER_SIG = re.compile(r"(x-signature)([\"'\s:=]+)([^\s\"',}]+)", re.IGNORECASE)
+
+
+def last4(value):
+    text = str(value or "")
+    if len(text) <= 4:
+        return "****"
+    return "***" + text[-4:]
+
+
+def redact_secrets(text, app_key="", app_secret=""):
+    if not text:
+        return text
+
+    def key_header(match):
+        return match.group(1) + match.group(2) + last4(match.group(3))
+
+    def sig_header(match):
+        return match.group(1) + match.group(2) + "***"
+
+    text = _HEADER_SIG.sub(sig_header, text)
+    text = _HEADER_KEY.sub(key_header, text)
+    secret = str(app_secret or "")
+    key = str(app_key or "")
+    if len(secret) >= 8 and secret in text:
+        text = text.replace(secret, "***")
+    if len(key) > 4 and key in text:
+        text = text.replace(key, last4(key))
+    return text
+
+
+class SecretRedactFilter(logging.Filter):
+    def __init__(self, app_key="", app_secret=""):
+        super().__init__()
+        self.app_key = app_key or ""
+        self.app_secret = app_secret or ""
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        redacted = redact_secrets(message, self.app_key, self.app_secret)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+def silence_webull_logs():
+    """Keep SDK request dumps off, and mask key and signature if a log line still has them."""
+    key, secret, _http, _mqtt = credentials()
+    redact = SecretRedactFilter(key, secret)
+    for name in ("webull", "webull.core", "webull.data"):
+        log = logging.getLogger(name)
+        log.setLevel(logging.CRITICAL)
+        if not any(isinstance(item, SecretRedactFilter) for item in log.filters):
+            log.addFilter(redact)
+    root = logging.getLogger()
+    if not any(isinstance(item, SecretRedactFilter) for item in root.filters):
+        root.addFilter(redact)
+
+
+def mqtt_client_id(prefix, attempt):
+    return f"{prefix}-{os.getpid()}-{attempt}"
+
+
+def disconnect_reason(rc):
+    if rc is None:
+        return "none"
+    import paho.mqtt.client as mqttc
+
+    return mqttc.error_string(rc)
+
+
+def connect_failure(exc):
+    from webull.data.internal.exceptions import ConnectException, LoopException
+
+    if isinstance(exc, (ConnectException, LoopException)):
+        return exc.error_code, exc.error_msg or "unknown"
+    return "none", type(exc).__name__
+
+
+def make_streaming_client(session_id, token_dir):
+    from webull.core.retry.retry_policy import NO_RETRY_POLICY
+    from webull.data.data_streaming_client import DataStreamingClient
+
+    key, secret, http_host, mqtt_host = credentials()
+    client = DataStreamingClient(
+        key,
+        secret,
+        "us",
+        session_id,
+        http_host=http_host,
+        mqtt_host=mqtt_host,
+        retry_policy=NO_RETRY_POLICY,
+    )
+    client.set_token_dir(str(token_dir))
+    return client
+
+
+def retry_subscribe(client, subscribe, is_current, on_error, attempts=4):
+    """Subscribe after the connect callback returns so the MQTT loop is reading.
+
+    Retries a few times. If all fail, disconnects so the caller can open a new id.
+    on_error receives http status, code, and message only.
+    """
+    from webull.core.exception.exceptions import ServerException
+
+    delay = 0.5
+    for _ in range(attempts):
+        if not is_current():
+            return False
+        time.sleep(delay)
+        if not is_current():
+            return False
+        try:
+            subscribe()
+            return True
+        except ServerException as exc:
+            on_error(exc.get_http_status(), exc.get_error_code(), exc.get_error_msg())
+        except Exception as exc:
+            on_error("none", type(exc).__name__, "")
+        delay = min(delay * 2, 8)
+    if is_current():
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+    return False
+
+
+def reconnect_wait(held, delay, cap=30):
+    """Return (seconds to sleep, delay to store). A CONNACK resets the wait to 1s."""
+    if held:
+        return 1, 1
+    return delay, min(delay * 2, cap)
