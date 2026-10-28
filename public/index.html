@@ -642,7 +642,7 @@
 
   const WARNING_BULLISH = new Set([
     'bottoming_tail', 'doji_bear_run', 'high_volume_buy', 'momentum_exhaustion_down',
-    'momentum_exhaustion_up', 'tape_slowdown_bear_run', 'tape_slowdown_bull_run',
+    'momentum_exhaustion_up', 'tape_slowdown_bear_run',
     'above_9_ema', 'above_20_ema', 'resistance_breakout', 'held_support'
   ]);
 
@@ -654,8 +654,10 @@
     high_volume_buy: (t) => `⚠ Large Buy Volume at ${t}`,
     momentum_exhaustion_up: () => '⚠ Shrinking candles on bullish run — momentum exhausting',
     momentum_exhaustion_down: () => '⚠ Shrinking candles on bearish run — selling exhausting',
-    tape_slowdown_bull_run: () => '⚠ Tape slowdown after bullish run — consolidation / pause',
-    tape_slowdown_bear_run: () => '⚠ Tape slowdown after bearish run — selling may be drying up',
+    tape_slowdown_bull_run: (t) =>
+      `⚠ Tape slowdown after bullish run — 1m bar ${t}`,
+    tape_slowdown_bear_run: (t) =>
+      `⚠ Tape slowdown after bearish run — 1m bar ${t}`,
     lost_9_ema: () => '⚠ Price below 9 EMA — weak structure',
     lost_20_ema: () => '⚠ Price below 20 EMA — weak structure',
     above_9_ema: () => '⚠ Price above 9 EMA — strong structure',

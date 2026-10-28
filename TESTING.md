@@ -27,10 +27,10 @@ For each of the five conditions, find a moment where the condition's truth value
 - **9/20 EMA cross (1m):** When the 9 EMA crosses above the 20 EMA on the 1-min chart, the dot flips green. When it crosses below, flips red.
 - **MACD (1m):** When the MACD histogram bar on the 1-min chart is above zero, the dot is green; below zero, red.
 - **VWAP:** When price is above the orange VWAP line, the dot is green; below, red.
-- **No HV sell:** Green when no bearish 2×-volume sell bar in the last 8 completed 1m bars. Red when a high-volume sell warning would fire.
+- **No HV sell:** Green when no HV sell in the last 8 completed 1m bars. After a green run: bearish with vol ≥ 85% of peak green vol, or large reversal bar (body ≥ 50% of avg green body) with vol ≥ 75% of peak; if no green run, bearish with volume ≥ 2× prior 8-bar avg. Red when a high-volume sell warning would fire.
 - **Spread ≤10¢:** Green when Schwab quote ask − bid ≤ $0.10; red when wider or bid/ask missing.
-- **Front side (row 2):** Green when buy-side run intact (above 9 EMA, small white candles OK). Red on reversal / backside lower lows, not on a single small white candle after a green run.
-- **Giveback (row 2):** After a green chain, compare pullback from chain high to chain range; yellow ~30-50%, red &gt;50%.
+- **Front side (row 2):** Green only on an **active** buy-side push (near run highs, or greens in the last 2 bars). Small white pullback candles count only **near the run peak**. **Red** on sideways/chop after an impulse (mixed green/red, boxed range, stale run with no new highs, or lower highs off peak) — even if still above 9 EMA. Red on reversal / backside lower lows, not on a single small white candle during a live push.
+- **Giveback (row 2):** Run = 2+ green 1m bars, or one green bar whose high−low ≥ `givebackMoveMinUsd` (default $0.05). Then compare pullback from run high to run range; yellow ~30-50%, red &gt;50% or no qualifying run.
 
 **Pass criterion:** All five row-1 dots correctly reflect chart state at any chosen moment.
 
@@ -54,7 +54,8 @@ Identify or wait for each of the following on the 1-min chart, and confirm the c
 - **Topping tail:** A 1-min bar with the upper wick longer than 60% of the bar's total range. Gatekeeper should display "⚠ Topping tail - 1m bar [HH:MM]" within one poll cycle (5s) of bar close.
 - **Doji:** A 1-min bar where the body is less than 10% of the bar's range. Gatekeeper shows "⚠ Doji - 1m bar [HH:MM]".
 - **Momentum exhaustion:** Three consecutive bullish 1-min bars where bodies (or heights) are shrinking. Gatekeeper shows "⚠ Shrinking candles - momentum exhausting".
-- **Tape slowdown:** A 1-min bar with volume less than 50% of the prior 10-bar average. Gatekeeper shows "⚠ Tape slowdown - volume contracting".
+- **Tape slowdown (bull run):** After a bullish run (same structure as HV-sell / front-side run detection), a 1-min bar with volume below 50% of that run's peak **or** below 50% of the run's average volume. Gatekeeper shows "⚠ Tape slowdown after bullish run — 1m bar [HH:MM]" in the **Bearish** column within one poll cycle of bar close; the bar time stays visible for 8 minutes.
+- **Tape slowdown (bear run):** Same volume rule after a bearish run. Gatekeeper shows "⚠ Tape slowdown after bearish run — 1m bar [HH:MM]" in the **Bullish** column.
 - **Lost 20 EMA on 1-min:** A 1-min bar closing below the 20 EMA on the 1-min chart. Gatekeeper shows "⚠ Lost 20 EMA on 1-min - back side forming".
 
 **Pass criterion:** Each warning fires within one poll cycle of the source condition appearing on the chart.

@@ -29,7 +29,7 @@ Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY; only Row 1 fail
 - 9 EMA > 20 EMA (1m)
 - MACD histogram > 0 (1m, TOS ExpAverage)
 - Price above session VWAP (4:00 AM ET anchor)
-- No high-volume sell in last 8 minutes
+- No high-volume sell in last 8 minutes (≥85% of peak green vol after a buy run, or large reversal ≥75%; else 2× prior-8-bar avg)
 - Bid-ask spread ≤ $0.10
 
 ### Row 2: setup row (four lights)
@@ -37,7 +37,7 @@ Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY; only Row 1 fail
 - **Resistance:** tri-state vs KEY LVL ↑
 - **Support:** tri-state vs KEY LVL ↓
 - **Front side:** buy-side structure (not a GO veto)
-- **Giveback:** pullback from trailing green-run high
+- **Giveback:** pullback from most recent run (2+ greens, or one strong green ≥ move min); red if no run or deep giveback
 
 ### Warnings (two columns)
 
