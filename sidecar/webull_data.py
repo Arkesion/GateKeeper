@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -47,6 +48,44 @@ def credentials():
     http_host = host_name(os.environ.get("WEBULL_HTTP_HOST"), "api.webull.com")
     mqtt_host = host_name(os.environ.get("WEBULL_MQTT_HOST"), "data-api.webull.com")
     return key, secret, http_host, mqtt_host
+
+
+def notice_fields(payload):
+    items = payload if isinstance(payload, list) else [payload]
+    found = []
+    for item in items:
+        if isinstance(item, dict):
+            found.append((str(item.get("type") or ""), str(item.get("content") or "")))
+        else:
+            found.append((str(getattr(item, "type", "") or ""), str(getattr(item, "content", "") or "")))
+    return found
+
+
+def gatekeeper_stream_check(force):
+    """Return an exit code when Gatekeeper already holds the only stream. 0 means continue."""
+    import urllib.error
+    import urllib.request
+
+    url = os.environ.get("GATEKEEPER_URL", "").strip().rstrip("/")
+    if not url:
+        print("warning: GATEKEEPER_URL is unset; continuing", flush=True)
+        return 0
+    try:
+        with urllib.request.urlopen(url + "/api/health", timeout=3) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        print("warning: GATEKEEPER_URL is unreachable; continuing", flush=True)
+        return 0
+    if body.get("stream") != "streaming":
+        return 0
+    if not force:
+        print(
+            "Gatekeeper is streaming. Pass --force to take the stream from Gatekeeper.",
+            file=sys.stderr,
+        )
+        return 2
+    print("warning: --force will take the stream from Gatekeeper", flush=True)
+    return 0
 
 
 def make_data_client(token_dir):

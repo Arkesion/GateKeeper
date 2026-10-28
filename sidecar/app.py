@@ -56,6 +56,7 @@ class Sidecar:
         self.quotes = {}
         self.subscribed = set()
         self.logged_sessions = set()
+        self.taken = threading.Event()
 
     def run(self):
         logging.basicConfig(
@@ -125,12 +126,18 @@ class Sidecar:
                     self.stream = None
             if self.stop.is_set():
                 return
+            if self.taken.is_set():
+                while self.taken.is_set():
+                    if self.stop.wait(0.5):
+                        return
+                continue
             sleep_for, delay = reconnect_wait(held["ok"], delay)
             if self.stop.wait(sleep_for):
                 return
 
     def _on_connect(self, client, api_client, session_id):
         self.connected.set()
+        self._set_stream_status("streaming")
         LOG.info("connect rc=0 reason=Connection successful client_id=%s", session_id)
 
         def is_current():
@@ -188,14 +195,41 @@ class Sidecar:
             session_id,
         )
 
+    def _set_stream_status(self, value):
+        try:
+            self.redis.set("gk:stream", value)
+        except Exception as exc:
+            LOG.error("stream status failed: %s", type(exc).__name__)
+
+    def _on_notice(self, client, payload):
+        from webull_data import notice_fields
+
+        for kind, content in notice_fields(payload):
+            if kind != "1002":
+                continue
+            LOG.warning(
+                "%s notice type=1002 content=%s",
+                datetime.now(timezone.utc).isoformat(),
+                content,
+            )
+            self.taken.set()
+            self._set_stream_status("stream_taken")
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
     def _on_message(self, client, topic, payload):
         try:
-            self._handle_message(topic, payload)
+            self._handle_message(client, topic, payload)
         except Exception as exc:
             LOG.error("message error %s", type(exc).__name__)
 
-    def _handle_message(self, topic, payload):
+    def _handle_message(self, client, topic, payload):
         items = payload if isinstance(payload, list) else [payload]
+        if topic == "notice":
+            self._on_notice(client, payload)
+            return
         if topic == "tick":
             for tick in items:
                 self._on_tick(tick)
@@ -339,6 +373,8 @@ class Sidecar:
                     self._watch(cmd)
                 elif op == "unwatch":
                     self._unwatch(str(cmd.get("symbol") or "").upper())
+                elif op == "reclaim":
+                    self.taken.clear()
                 else:
                     raise RuntimeError(f"unknown op")
                 if cmd_id:
@@ -425,6 +461,7 @@ class Sidecar:
             self.redis.delete(f"gk:bars:{symbol}", f"gk:quote:{symbol}")
 
     def _subscribe(self, symbol):
+        """Subscribe this symbol on the sidecar's single MQTT session."""
         from webull.data.common.category import Category
         from webull.data.common.subscribe_type import SubscribeType
         from webull.data.quotes.market_streaming_data import MarketDataStreaming

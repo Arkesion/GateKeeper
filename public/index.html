@@ -449,11 +449,12 @@
       top: 120px;
     }
     #overlay-stale { background: rgba(255, 170, 0, 0.25); }
+    #overlay-taken { background: rgba(40, 60, 140, 0.55); }
     #overlay-disconnected { background: rgba(255, 51, 51, 0.35); }
     #overlay-auth { background: rgba(0, 0, 0, 0.9); }
     #overlay-rate { background: rgba(0, 0, 0, 0.88); }
 
-    #reauth-btn {
+    #reauth-btn, #reclaim-btn {
       margin-top: 24px;
       display: inline-block;
       background: #000;
@@ -468,7 +469,7 @@
       transition: background 0.2s, color 0.2s;
     }
 
-    #reauth-btn:hover { background: #00ff66; color: #000; }
+    #reauth-btn:hover, #reclaim-btn:hover { background: #00ff66; color: #000; }
   </style>
 </head>
 <body>
@@ -592,6 +593,10 @@
   <div class="overlay" id="overlay-stale" data-id="stale">
     <div class="overlay-title">DATA STALE</div>
   </div>
+  <div class="overlay" id="overlay-taken" data-id="taken">
+    <div class="overlay-title">STREAM TAKEN BY ANOTHER SESSION</div>
+    <button id="reclaim-btn" type="button">Reclaim</button>
+  </div>
   <div class="overlay" id="overlay-disconnected" data-id="disconnected">
     <div class="overlay-title">DISCONNECTED</div>
   </div>
@@ -685,6 +690,7 @@
   let healthData = { authenticated: true, rate_limit_status: 'ok' };
   let stateAuthFailed = false;
   let feedStale = false;
+  let feedTaken = false;
   let unknownSymbol = false;
   let clockTimer = null;
   let ctxSnapshot = null;
@@ -718,6 +724,7 @@
   const overlayEls = {
     waiting: document.getElementById('overlay-waiting'),
     stale: document.getElementById('overlay-stale'),
+    taken: document.getElementById('overlay-taken'),
     disconnected: document.getElementById('overlay-disconnected'),
     auth: document.getElementById('overlay-auth'),
     rate: document.getElementById('overlay-rate'),
@@ -1349,6 +1356,7 @@
     if (healthData.rate_limit_status === 'backing_off') return 'rate';
     if (!symbol) return null;
     if (unknownSymbol) return 'invalid';
+    if (feedTaken || healthData.stream === 'stream_taken') return 'taken';
     if (feedStale) return 'stale';
     if (waitingForData || !hasReceivedOk) return 'waiting';
 
@@ -1448,6 +1456,8 @@
       const { ok, data } = await fetchJson('/api/health');
       if (!ok || !data) return;
       healthData = data;
+      if (data.stream === 'stream_taken') feedTaken = true;
+      else if (data.stream === 'streaming') feedTaken = false;
       renderApiStats(healthData);
       updateOverlays();
     } catch {
@@ -1473,6 +1483,20 @@
       }
 
       stateAuthFailed = false;
+
+      if (data?.status === 'stream_taken') {
+        feedTaken = true;
+        feedStale = false;
+        waitingForData = false;
+        hasReceivedOk = false;
+        clearContext();
+        setTrafficLightNeutral();
+        clearDots();
+        clearWarnings();
+        updateOverlays();
+        return;
+      }
+      feedTaken = false;
 
       if (data?.status === 'data_stale') {
         feedStale = true;
@@ -1607,6 +1631,9 @@
 
     pollHealth();
     healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
+    document.getElementById('reclaim-btn').addEventListener('click', async () => {
+      await fetchJson('/api/stream/reclaim', { method: 'POST' });
+    });
     overlayTimer = setInterval(updateOverlays, 1000);
     startClock();
 

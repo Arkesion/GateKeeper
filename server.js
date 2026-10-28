@@ -40,6 +40,10 @@ async function stateHandler(req, res) {
     }
   }
 
+  if (config.marketDataProvider === 'webull' && (await state.isStreamTaken())) {
+    return res.json({ status: 'stream_taken' });
+  }
+
   if (config.marketDataProvider === 'webull' && state.isDataStale()) {
     return res.json({ status: 'data_stale' });
   }
@@ -49,6 +53,10 @@ async function stateHandler(req, res) {
   } catch (err) {
     console.error(`Market data (${sym}):`, err.message);
     return res.json({ status: 'insufficient_data', missing: ['market_data'] });
+  }
+
+  if (config.marketDataProvider === 'webull' && (await state.isStreamTaken())) {
+    return res.json({ status: 'stream_taken' });
   }
 
   if (config.marketDataProvider === 'webull' && state.isDataStale()) {
@@ -97,6 +105,19 @@ registerRoutes(app, {
   ),
   getLastSuccessfulFetch: () => store.lastSuccessfulFetch,
   getRateLimitStatus: () => store.rateLimitStatus,
+  getStreamStatus: async () => {
+    if (config.marketDataProvider !== 'webull') return null;
+    const provider = getProvider();
+    if (typeof provider.getStreamStatus !== 'function') return null;
+    return provider.getStreamStatus();
+  },
+  reclaimStream: async () => {
+    const provider = getProvider();
+    if (typeof provider.reclaim !== 'function') {
+      throw new Error('reclaim is not available');
+    }
+    return provider.reclaim();
+  },
   stateHandler
 });
 

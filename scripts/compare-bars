@@ -13,7 +13,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,9 +28,11 @@ from webull_data import (
     credentials,
     disconnect_reason,
     fetch_closed_bars,
+    gatekeeper_stream_check,
     make_data_client,
     make_streaming_client,
     mqtt_client_id,
+    notice_fields,
     reconnect_wait,
     retry_subscribe,
 )
@@ -76,14 +78,19 @@ def classify(stream_bar, http_bar):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: python scripts/compare-bars SYMBOL", file=sys.stderr)
+    args = [item for item in sys.argv[1:] if item != "--force"]
+    force = "--force" in sys.argv[1:]
+    if len(args) != 1:
+        print("usage: python scripts/compare-bars [--force] SYMBOL", file=sys.stderr)
         return 2
-    symbol = sys.argv[1].upper()
+    symbol = args[0].upper()
     key, secret, _http_host, _mqtt_host = credentials()
     if not key or not secret:
         print("WEBULL_APP_KEY and WEBULL_APP_SECRET are required", file=sys.stderr)
         return 2
+    blocked = gatekeeper_stream_check(force)
+    if blocked:
+        return blocked
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("webull").setLevel(logging.CRITICAL)
@@ -134,6 +141,20 @@ def main():
             print(line, flush=True)
 
     def on_message(stream, topic, payload):
+        if topic == "notice":
+            for kind, content in notice_fields(payload):
+                if kind != "1002":
+                    continue
+                print(
+                    f"{datetime.now(timezone.utc).isoformat()} notice type=1002 content={content}",
+                    flush=True,
+                )
+                yielded.set()
+                try:
+                    stream.disconnect()
+                except Exception:
+                    pass
+            return
         try:
             _on_tick_message(topic, payload)
         except Exception as exc:
@@ -169,6 +190,7 @@ def main():
     print(f"starting compare-bars symbol={symbol}", flush=True)
     attempt = 0
     delay = 1
+    yielded = threading.Event()
     try:
         while True:
             attempt += 1
@@ -224,6 +246,8 @@ def main():
                 except Exception:
                     pass
             sleep_for, delay = reconnect_wait(held["ok"], delay)
+            if yielded.is_set():
+                break
             time.sleep(sleep_for)
     except KeyboardInterrupt:
         print("stopped", flush=True)

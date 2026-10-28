@@ -25,8 +25,10 @@ from webull_data import (
     connect_failure,
     credentials,
     disconnect_reason,
+    gatekeeper_stream_check,
     make_streaming_client,
     mqtt_client_id,
+    notice_fields,
     reconnect_wait,
     retry_subscribe,
 )
@@ -37,14 +39,19 @@ def stamp():
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: python scripts/lock-test SYMBOL", file=sys.stderr)
+    args = [item for item in sys.argv[1:] if item != "--force"]
+    force = "--force" in sys.argv[1:]
+    if len(args) != 1:
+        print("usage: python scripts/lock-test [--force] SYMBOL", file=sys.stderr)
         return 2
-    symbol = sys.argv[1].upper()
+    symbol = args[0].upper()
     key, secret, _http_host, _mqtt_host = credentials()
     if not key or not secret:
         print("WEBULL_APP_KEY and WEBULL_APP_SECRET are required", file=sys.stderr)
         return 2
+    blocked = gatekeeper_stream_check(force)
+    if blocked:
+        return blocked
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("webull").setLevel(logging.CRITICAL)
@@ -52,11 +59,23 @@ def main():
     os.makedirs(token_dir, exist_ok=True)
 
     def on_message(stream, topic, payload):
+        if topic == "notice":
+            for kind, content in notice_fields(payload):
+                if kind != "1002":
+                    continue
+                print(f"{stamp()} notice type=1002 content={content}", flush=True)
+                yielded.set()
+                try:
+                    stream.disconnect()
+                except Exception:
+                    pass
+            return
         print(f"{stamp()} message topic={topic} {payload}", flush=True)
 
     print(f"{stamp()} starting lock-test symbol={symbol}", flush=True)
     attempt = 0
     delay = 1
+    yielded = threading.Event()
     try:
         while True:
             attempt += 1
@@ -116,6 +135,8 @@ def main():
                 except Exception:
                     pass
             sleep_for, delay = reconnect_wait(held["ok"], delay)
+            if yielded.is_set():
+                break
             time.sleep(sleep_for)
     except KeyboardInterrupt:
         print(f"{stamp()} disconnect local-interrupt", flush=True)

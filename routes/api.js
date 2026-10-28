@@ -24,9 +24,14 @@ module.exports = function registerRoutes(app, deps) {
 
   app.get('/api/health', async (req, res) => {
     if (!deps.getAuthenticated()) await ensureSchwabAuth();
+    let stream = null;
+    if (config.marketDataProvider === 'webull' && deps.getStreamStatus) {
+      stream = await deps.getStreamStatus();
+    }
     res.json({
       authenticated: deps.getAuthenticated(),
       provider: config.marketDataProvider,
+      stream,
       token_store: TOKEN_FILE,
       last_successful_fetch: deps.getLastSuccessfulFetch(),
       rate_limit_status: deps.getRateLimitStatus(),
@@ -37,6 +42,18 @@ module.exports = function registerRoutes(app, deps) {
         frontend_state: config.frontendStatePollMs
       }
     });
+  });
+
+  app.post('/api/stream/reclaim', async (req, res) => {
+    if (config.marketDataProvider !== 'webull' || !deps.reclaimStream) {
+      return res.status(400).json({ ok: false, error: 'not webull' });
+    }
+    try {
+      await deps.reclaimStream();
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(503).json({ ok: false, error: 'redis down' });
+    }
   });
 
   app.get('/api/status', (req, res) => {
