@@ -256,6 +256,7 @@ class Sidecar:
                 prev.get("closePrice"),
                 prev.get("bidPrice"),
                 prev.get("askPrice"),
+                trade_ms if trade_ms is not None else prev.get("lastPrintAt"),
             )
             self.quotes[symbol] = quote
             forming = dict(builder.forming) if builder.forming else None
@@ -294,6 +295,7 @@ class Sidecar:
                 pre_close,
                 prev.get("bidPrice"),
                 prev.get("askPrice"),
+                prev.get("lastPrintAt"),
             )
             self.quotes[symbol] = quote
         self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
@@ -406,6 +408,16 @@ class Sidecar:
             quote = fetch_quote(self.data, symbol, self.limiter)
         except Exception as exc:
             LOG.warning("quote seed %s failed: %s", symbol, exc)
+        if (not quote or quote.get("lastPrice") is None) and bars:
+            last_close = bars[-1].get("close")
+            if last_close is not None:
+                prev = quote or {}
+                quote = quote_from_trade(
+                    last_close,
+                    prev.get("closePrice"),
+                    prev.get("bidPrice"),
+                    prev.get("askPrice"),
+                )
         builder = MinuteBarBuilder()
         builder.seed(bars, int(time.time() * 1000))
         with self.lock:

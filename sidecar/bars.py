@@ -377,10 +377,13 @@ def _num(value):
     return float(value)
 
 
-def quote_from_trade(price, pre_close, bid=None, ask=None):
-    return {
+def quote_from_trade(price, pre_close, bid=None, ask=None, last_print_at=None):
+    quote = {
         "lastPrice": price,
         "closePrice": pre_close,
         "bidPrice": bid,
         "askPrice": ask,
     }
+    if last_print_at is not None:
+        quote["lastPrintAt"] = int(last_print_at)
+    return quote

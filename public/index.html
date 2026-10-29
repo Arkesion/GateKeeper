@@ -448,6 +448,13 @@
       /* Block the panel only — ticker stays interactive via #ticker-wrap z-index */
       top: 120px;
     }
+    #app.feed-dim { opacity: 0.45; }
+    #last-print {
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      color: #9a9a9a;
+      margin-top: 8px;
+    }
     #overlay-stale { background: rgba(255, 170, 0, 0.25); }
     #overlay-taken { background: rgba(40, 60, 140, 0.55); }
     #overlay-disconnected { background: rgba(255, 51, 51, 0.35); }
@@ -545,6 +552,7 @@
 
   <div id="center-panel">
     <div id="clock-display" aria-live="off">--:--:--</div>
+    <div id="last-print" hidden>last print —</div>
     <div id="stock-status">
       <div id="status-line">Status: —</div>
       <div id="status-halt-time" class="status-detail" hidden>Halt Time: —</div>
@@ -592,6 +600,7 @@
   </div>
   <div class="overlay" id="overlay-stale" data-id="stale">
     <div class="overlay-title">DATA STALE</div>
+    <div class="overlay-sub" id="overlay-stale-sub"></div>
   </div>
   <div class="overlay" id="overlay-taken" data-id="taken">
     <div class="overlay-title">STREAM TAKEN BY ANOTHER SESSION</div>
@@ -618,7 +627,6 @@
   // Reads backend-cached state; Schwab quote ~1s + 1m ~2s (see footer /api/health).
   const STATE_POLL_MS = 1000;
   const HEALTH_POLL_MS = 30000;
-  const STALE_MS = 10000;
   const DISCONNECT_MS = 60000;
 
   const CONDITION_LABELS = {
@@ -682,6 +690,7 @@
   let healthTimer = null;
   let overlayTimer = null;
   let lastSuccessAt = null;
+  let lastPrintAtMs = null;
   let pollStartedAt = null;
   let hasReceivedOk = false;
   let waitingForData = true;
@@ -1329,12 +1338,38 @@
     }
   }
 
+  function formatAgo(ms) {
+    const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    return seconds + 's ago';
+  }
+
+  function renderLastPrint(at) {
+    const el = document.getElementById('last-print');
+    if (!el) return;
+    if (!Number.isFinite(at)) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.textContent = 'last print ' + formatAgo(at);
+  }
+
+  function renderStaleAge() {
+    const sub = document.getElementById('overlay-stale-sub');
+    if (!sub) return;
+    sub.textContent = lastSuccessAt == null ? '' : ('last update ' + formatAgo(lastSuccessAt));
+  }
+
   function resetDisplay() {
     hasReceivedOk = false;
     waitingForData = true;
     insufficientMissing = [];
     insufficientDetail = null;
     lastSuccessAt = null;
+    lastPrintAtMs = null;
+    document.getElementById('app').classList.remove('feed-dim');
+    const lastPrint = document.getElementById('last-print');
+    if (lastPrint) lastPrint.hidden = true;
     lastFlashedMinuteSlot = null;
     lastClockSecond = -1;
     priceAtSecond59 = null;
@@ -1367,7 +1402,6 @@
         const age = now - ref;
         if (!hasReceivedOk && age > DISCONNECT_MS) return 'disconnected';
         if (hasReceivedOk && age > DISCONNECT_MS) return 'disconnected';
-        if (hasReceivedOk && age > STALE_MS) return 'stale';
       }
     }
     return null;
@@ -1380,6 +1414,7 @@
         const sub = document.getElementById('overlay-waiting-sub');
         sub.textContent = formatWaitingSub(insufficientMissing, insufficientDetail);
       }
+      if (nextId === 'stale') renderStaleAge();
       return;
     }
 
@@ -1487,6 +1522,7 @@
       if (data?.status === 'stream_taken') {
         feedTaken = true;
         feedStale = false;
+        document.getElementById('app').classList.remove('feed-dim');
         waitingForData = false;
         hasReceivedOk = false;
         clearContext();
@@ -1501,15 +1537,14 @@
       if (data?.status === 'data_stale') {
         feedStale = true;
         waitingForData = false;
-        hasReceivedOk = false;
-        clearContext();
-        setTrafficLightNeutral();
-        clearDots();
-        clearWarnings();
+        document.getElementById('app').classList.add('feed-dim');
+        renderStaleAge();
+        renderLastPrint(lastPrintAtMs);
         updateOverlays();
         return;
       }
       feedStale = false;
+      document.getElementById('app').classList.remove('feed-dim');
 
       if (data?.status === 'invalid_symbol') {
         unknownSymbol = true;
@@ -1547,6 +1582,8 @@
       insufficientDetail = null;
       hasReceivedOk = true;
       lastSuccessAt = Date.now();
+      lastPrintAtMs = Number.isFinite(data.last_print_at) ? data.last_print_at : null;
+      renderLastPrint(lastPrintAtMs);
 
       renderTrafficLight(
         data.traffic_light_confirmed,
