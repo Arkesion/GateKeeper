@@ -213,6 +213,18 @@ Tests to write:
 
 **Signal log.** Every dot change, state transition, and warning is written to a log with a timestamp. Joined with journal exports, this lets each rule be scored by outcome later.
 
+## Phase 1 findings
+
+Measured on live data, 2026-10-28 and 29. These override earlier assumptions in this spec.
+
+- **HTTP bars are consolidated.** The BRAI 9:15 bar matched the Webull chart exactly, volume included. Closed bars are final and trustworthy.
+- **Live ticks are Nasdaq-only** (Nasdaq Basic). Tick-built OHLC matches HTTP within sub-penny; tick volume runs about 60–70% of consolidated.
+- **Forming-bar rule.** Price-based checks may read the forming bar. Volume-based checks (high-volume sell, 5-min volume, tape slowdown, RVOL) read final bars only.
+- **One streaming session per account.** A new session takes the stream (notice type 1002). The sidecar never auto-reconnects on 1002; scripts refuse to run while Gatekeeper streams unless forced.
+- **Three distinct failure states.** DATA STALE (sidecar heartbeat over 3 s), GATEKEEPER UNREACHABLE (browser can't reach the app for 3 s), STREAM TAKEN. The first two dim the last values with "last update Xs ago"; a quiet ticker is not stale and shows "last print Xs ago".
+- **Tick messages carry no sale-condition codes**, but do carry a buy/sell `side` field, which Phase 6 can use for buy-volume ratio.
+- **Deployment.** Gatekeeper serves plain HTTP at `corpus:4000`, bound to the Tailscale IP only; a systemd unit waits for Tailscale before starting the container.
+
 ## Build phases
 
 Six phases, in order. Phases 1–4 need only Webull; phase 5 waits on outside data sources, so it comes late despite sitting at the top of the screen.
