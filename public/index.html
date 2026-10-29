@@ -456,6 +456,7 @@
       margin-top: 8px;
     }
     #overlay-stale { background: rgba(255, 170, 0, 0.25); }
+    #overlay-unreachable { background: rgba(180, 40, 40, 0.35); }
     #overlay-taken { background: rgba(40, 60, 140, 0.55); }
     #overlay-disconnected { background: rgba(255, 51, 51, 0.35); }
     #overlay-auth { background: rgba(0, 0, 0, 0.9); }
@@ -602,6 +603,10 @@
     <div class="overlay-title">DATA STALE</div>
     <div class="overlay-sub" id="overlay-stale-sub"></div>
   </div>
+  <div class="overlay" id="overlay-unreachable" data-id="unreachable">
+    <div class="overlay-title">GATEKEEPER UNREACHABLE</div>
+    <div class="overlay-sub" id="overlay-unreachable-sub"></div>
+  </div>
   <div class="overlay" id="overlay-taken" data-id="taken">
     <div class="overlay-title">STREAM TAKEN BY ANOTHER SESSION</div>
     <button id="reclaim-btn" type="button">Reclaim</button>
@@ -628,6 +633,8 @@
   const STATE_POLL_MS = 1000;
   const HEALTH_POLL_MS = 30000;
   const DISCONNECT_MS = 60000;
+  const UNREACHABLE_MS = 3000;
+  const STATE_FETCH_MS = 3000;
 
   const CONDITION_LABELS = {
     emas: '9 EMA above 20 EMA',
@@ -700,6 +707,8 @@
   let stateAuthFailed = false;
   let feedStale = false;
   let feedTaken = false;
+  let pollFailSince = null;
+  let unreachableTimer = null;
   let unknownSymbol = false;
   let clockTimer = null;
   let ctxSnapshot = null;
@@ -733,6 +742,7 @@
   const overlayEls = {
     waiting: document.getElementById('overlay-waiting'),
     stale: document.getElementById('overlay-stale'),
+    unreachable: document.getElementById('overlay-unreachable'),
     taken: document.getElementById('overlay-taken'),
     disconnected: document.getElementById('overlay-disconnected'),
     auth: document.getElementById('overlay-auth'),
@@ -1360,6 +1370,38 @@
     sub.textContent = lastSuccessAt == null ? '' : ('last update ' + formatAgo(lastSuccessAt));
   }
 
+  function renderUnreachableAge() {
+    const sub = document.getElementById('overlay-unreachable-sub');
+    if (!sub) return;
+    sub.textContent = lastSuccessAt == null ? '' : ('last update ' + formatAgo(lastSuccessAt));
+  }
+
+  function pollFailureIsUnreachable() {
+    if (pollFailSince == null) return false;
+    const now = Date.now();
+    if (lastSuccessAt != null) return now - lastSuccessAt > UNREACHABLE_MS;
+    return now - pollFailSince > UNREACHABLE_MS;
+  }
+
+  function notePollFailure() {
+    if (pollFailSince == null) pollFailSince = Date.now();
+    if (unreachableTimer) return;
+    const anchor = lastSuccessAt != null ? lastSuccessAt : pollFailSince;
+    const wait = Math.max(0, UNREACHABLE_MS - (Date.now() - anchor));
+    unreachableTimer = setTimeout(() => {
+      unreachableTimer = null;
+      if (pollFailSince != null) updateOverlays();
+    }, wait);
+  }
+
+  function notePollSuccess() {
+    pollFailSince = null;
+    if (unreachableTimer) {
+      clearTimeout(unreachableTimer);
+      unreachableTimer = null;
+    }
+  }
+
   function resetDisplay() {
     hasReceivedOk = false;
     waitingForData = true;
@@ -1367,6 +1409,7 @@
     insufficientDetail = null;
     lastSuccessAt = null;
     lastPrintAtMs = null;
+    notePollSuccess();
     document.getElementById('app').classList.remove('feed-dim');
     const lastPrint = document.getElementById('last-print');
     if (lastPrint) lastPrint.hidden = true;
@@ -1392,6 +1435,7 @@
     if (!symbol) return null;
     if (unknownSymbol) return 'invalid';
     if (feedTaken || healthData.stream === 'stream_taken') return 'taken';
+    if (pollFailureIsUnreachable()) return 'unreachable';
     if (feedStale) return 'stale';
     if (waitingForData || !hasReceivedOk) return 'waiting';
 
@@ -1415,8 +1459,14 @@
         sub.textContent = formatWaitingSub(insufficientMissing, insufficientDetail);
       }
       if (nextId === 'stale') renderStaleAge();
+      if (nextId === 'unreachable') renderUnreachableAge();
       return;
     }
+
+    document.getElementById('app').classList.toggle(
+      'feed-dim',
+      nextId === 'stale' || nextId === 'unreachable'
+    );
 
     for (const el of Object.values(overlayEls)) {
       el.classList.remove('overlay-active');
@@ -1430,6 +1480,8 @@
         const sub = document.getElementById('overlay-waiting-sub');
         sub.textContent = formatWaitingSub(insufficientMissing, insufficientDetail);
       }
+      if (nextId === 'unreachable') renderUnreachableAge();
+      if (nextId === 'stale') renderStaleAge();
     }
     if (nextId === 'invalid') {
       const sub = document.getElementById('overlay-invalid-sub');
@@ -1502,13 +1554,20 @@
 
   async function pollState() {
     if (!symbol) return;
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), STATE_FETCH_MS);
 
     try {
-      const { ok, status, data } = await fetchJson(`/api/state/${encodeURIComponent(symbol)}`);
+      const { ok, status, data } = await fetchJson(
+        `/api/state/${encodeURIComponent(symbol)}`,
+        { signal: controller.signal }
+      );
       if (!data) {
+        notePollFailure();
         updateOverlays();
         return;
       }
+      notePollSuccess();
 
       if (data?.status === 'auth_failed') {
         stateAuthFailed = true;
@@ -1612,7 +1671,10 @@
       renderStockStatus(data.context?.trading_status);
       updateOverlays();
     } catch {
+      notePollFailure();
       updateOverlays();
+    } finally {
+      clearTimeout(abortTimer);
     }
   }
 

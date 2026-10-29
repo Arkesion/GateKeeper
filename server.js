@@ -157,6 +157,15 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
+function logFatal(kind, err) {
+  const stack = err && err.stack ? err.stack : String(err);
+  console.error(`${kind}: ${stack}`);
+  process.exit(1);
+}
+
+process.on('uncaughtException', err => logFatal('uncaughtException', err));
+process.on('unhandledRejection', reason => logFatal('unhandledRejection', reason));
+
 function listen() {
   const onListen = () => {
     console.log(`\n🚀 KQ-GateKeeper running at ${config.publicUrl}`);
