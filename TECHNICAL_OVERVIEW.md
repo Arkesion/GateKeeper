@@ -48,7 +48,7 @@ flowchart TB
   end
   Schwab[Schwab Market Data API]
   Nasdaq[Nasdaq Trader halt RPC]
-  UI -->|HTTPS poll 1s| GK
+  UI -->|HTTP poll 1s| GK
   GK --> Vol
   GK -->|OAuth + quotes + candles| Schwab
   GK -->|halt list| Nasdaq
@@ -58,7 +58,7 @@ flowchart TB
 |-------------|------|
 | Schwab Market Data | OAuth2, NBBO quote, 1m and daily price history |
 | Nasdaq Trader RPC | Supplemental halt / LUDP metadata |
-| TLS certificates | Production HTTPS (mounted read-only) |
+| Tailscale | Encrypts the plain HTTP dashboard on port 4000 |
 
 ---
 

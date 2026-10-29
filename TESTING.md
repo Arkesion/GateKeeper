@@ -107,14 +107,14 @@ Identify or wait for each of the following on the 1-min chart, and confirm the c
 
 ## Production smoke (post-deploy)
 
-Run on the host after `docker compose up --build -d` (rebuild required; `restart` alone does not refresh baked-in source). Adjust port and `-k` if you terminate TLS elsewhere.
+Run on the host after `docker compose up --build -d` (rebuild required; `restart` alone does not refresh baked-in source). The published port is plain HTTP on the Tailscale address, so `localhost` will not answer.
 
 ```bash
 cd /path/to/Gatekeeper
 docker compose up --build -d
 sleep 8
-curl -sS -k https://localhost:443/api/health
-curl -sS -k https://localhost:443/api/state/AAPL | head -c 2000
+curl -sS http://100.96.105.85:4000/api/health
+curl -sS http://100.96.105.85:4000/api/state/AAPL | head -c 2000
 docker compose logs gatekeeper --tail 40
 ```
 

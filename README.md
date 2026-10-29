@@ -95,7 +95,6 @@ Gatekeeper/
 | `PUBLIC_URL` | Base URL for OAuth redirect |
 | `REDIRECT_URI` | Must match Schwab app settings (`/callback`) |
 | `TOKEN_PATH` | Persisted tokens (Docker volume recommended) |
-| `CERT_PATH` / `KEY_PATH` | HTTPS in production |
 | `QUOTE_POLL_MS` | Schwab quote poll (default 1000) |
 | `CANDLE_POLL_MS` | 1m candle poll (default 2000) |
 | `STATE_POLL_MS` | Frontend state poll hint in `/api/health` |
@@ -124,7 +123,7 @@ Open `http://localhost:3000`, enter a symbol, and complete Schwab login at `/log
 docker compose up --build
 ```
 
-Default compose maps host **443 → 3000**, mounts TLS certs and a persistent volume for tokens.
+Default compose maps Tailscale `100.96.105.85:4000` to container port 3000 and serves plain HTTP. Tailscale encrypts the link. A volume persists tokens.
 
 ---
 
@@ -147,7 +146,7 @@ Example `GET /api/state/AAPL` when ready: `status: ok`, `traffic_light_confirmed
 
 Source is **baked into the Docker image**. Rebuild after code changes; `docker compose restart` alone does not refresh application code.
 
-On the server (after clone, `.env`, TLS certs, and token volume are configured):
+On the server (after clone, `.env`, and the token volume are configured):
 
 ```bash
 cd /path/to/Gatekeeper

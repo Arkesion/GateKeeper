@@ -21,15 +21,12 @@ services:
     container_name: gatekeeper
     restart: unless-stopped
     ports:
-      - "100.96.105.85:443:3000"
+      - "100.96.105.85:4000:3000"
     volumes:
-      - /etc/gatekeeper/certs:/certs:ro
       - gatekeeper-data:/data
     env_file:
       - .env
     environment:
-      - CERT_PATH=/certs/cert.pem
-      - KEY_PATH=/certs/key.pem
       - TOKEN_PATH=/data/tokens.json
       - PUBLIC_URL=https://gatekeeper.veilforge.org
       - REDIS_URL=redis://redis:6379
