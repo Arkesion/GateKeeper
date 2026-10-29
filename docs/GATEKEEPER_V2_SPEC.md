@@ -106,6 +106,22 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 | Near half/whole dollar | Trigger within 5¢ under a .00 or .50 level | New: Ross criterion 3 |
 | Not extended | Price within N× ATR of the 5-min 9 EMA | New: Ross pitfall, chasing |
 
+**Revised 2026-10-29: Gospel vs Context.** Audited against Ross's Micro Pullback PDF, the Technical Analysis Series, and the Warrior pullback-strategy page. This supersedes the table above for what drives the verdict.
+
+| Row | Dot | Source |
+| --- | --- | --- |
+| Gospel | MACD positive | Ross's videos, per Kevin; citation to add |
+| Gospel | No high-volume sell | Red bar volume above the buying (green) bars' volume, or a large red candle. Ross's videos, per Kevin; final bars only |
+| Gospel | Resistance | PDF criterion 2: no nearby resistance |
+| Gospel | Front side | Web page: higher highs and higher lows, early in the breakout |
+| Gospel | Giveback | Web page: shallow pullback; pitfall, too deep |
+| Gospel | Spread ≤ 10¢ | Web page pitfall: wide spreads; 10¢ is MY OWN |
+| Context | VWAP | Not a micro-pullback criterion; value shown only |
+| Context | 9/20 EMA | MY OWN; might be useful |
+| Context | Support | MY OWN (v1) |
+
+Context dots render grey with values and never affect the verdict. The verdict reads ALIGNED or NOT ALIGNED and lists only failing Gospel checks. Every dot's hover names its source.
+
 Rows marked v1 are summaries. The v1 code's existing definitions and thresholds are the source of truth; port them exactly and change behavior only where this spec says so (the MACD seeding fix).
 
 **Setup line.** One line under the dots reports the state machine, with the trade math pre-computed before any entry:
