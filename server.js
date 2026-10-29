@@ -5,6 +5,36 @@ const express = require('express');
 const fs = require('fs');
 const https = require('https');
 
+function writeDiag(line) {
+  const text = line.endsWith('\n') ? line : `${line}\n`;
+  try {
+    fs.writeSync(process.stderr.fd, text);
+  } catch {
+    /* stderr unavailable */
+  }
+}
+
+const exitProcess = process.exit.bind(process);
+process.exit = code => {
+  const err = new Error(`process.exit ${code}`);
+  writeDiag(err.stack);
+  return exitProcess(code);
+};
+
+process.on('beforeExit', code => {
+  let handles = '';
+  try {
+    handles = JSON.stringify(process.getActiveResourcesInfo());
+  } catch (err) {
+    handles = String(err);
+  }
+  writeDiag(`event loop drained code=${code} handles=${handles}`);
+});
+
+process.on('exit', code => {
+  writeDiag(`exit code=${code}`);
+});
+
 const store = require('./lib/store');
 const { config } = store;
 const auth = require('./lib/auth');
@@ -137,7 +167,7 @@ async function initAuthOnStartup() {
 let httpServer = null;
 
 function shutdown(signal) {
-  console.log(`${signal}: shutting down Gatekeeper`);
+  writeDiag(`${signal}: shutting down Gatekeeper`);
   state.stopSymbolRefresh();
   if (config.marketDataProvider === 'webull') {
     getProvider().stop().catch(() => {});
@@ -159,7 +189,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 function logFatal(kind, err) {
   const stack = err && err.stack ? err.stack : String(err);
-  console.error(`${kind}: ${stack}`);
+  writeDiag(`${kind}: ${stack}`);
   process.exit(1);
 }
 
@@ -178,9 +208,13 @@ function listen() {
       cert: fs.readFileSync(certPath),
       key: fs.readFileSync(keyPath)
     }, app);
-    httpServer.listen(PORT, onListen);
   } else {
     httpServer = app.listen(PORT, onListen);
+  }
+  httpServer.on('close', () => writeDiag('http server close'));
+  httpServer.on('error', err => writeDiag(`http server error: ${err && err.stack ? err.stack : err}`));
+  if (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    httpServer.listen(PORT, onListen);
   }
 }
 
