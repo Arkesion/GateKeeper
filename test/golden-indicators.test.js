@@ -9,6 +9,7 @@ const {
   calcMACDExactTOS,
   calcVWAP
 } = require('../lib/indicators');
+const { trafficBanner, isHighVolumeSellBar } = require('../lib/signals');
 
 function etParts(ms) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -108,10 +109,6 @@ function measureProduction(bars, day) {
   };
 }
 
-function above(left, right) {
-  return left > right;
-}
-
 /**
  * Exact chart values are a known gap. These captures were mid-minute, so the
  * hover timing is ambiguous until closed-bar calibration. Deltas are logged
@@ -129,9 +126,7 @@ function assertDotAgreement(name, got, chart) {
   console.log(
     `${name} delta vwap=${delta.vwap.toFixed(4)} ema9=${delta.ema9.toFixed(4)} ema20=${delta.ema20.toFixed(4)} macd=${delta.macd.toFixed(5)} signal=${delta.signal.toFixed(5)} hist=${delta.hist.toFixed(5)}`
   );
-  assert.equal(above(got.ema9, got.ema20), above(chart.ema9, chart.ema20), `${name} EMA9 vs EMA20`);
   assert.equal(got.hist > 0, chart.hist > 0, `${name} MACD histogram sign`);
-  assert.equal(above(got.price, got.vwap), above(got.price, chart.vwap), `${name} price vs VWAP`);
 }
 
 test('BRAI dot states agree with the chart', () => {
@@ -156,4 +151,46 @@ test('CHSN dot states agree with the chart', () => {
     signal: 0.0301171,
     hist: 0.0131637
   });
+});
+
+function gospelBanner(front, supportState) {
+  return trafficBanner(
+    {
+      emas: true,
+      macd: true,
+      vwap: true,
+      no_hv_sell: true,
+      spread_ok: true,
+      ...front
+    },
+    {
+      resistance: { state: 'green', phase: 'clear' },
+      support: { state: supportState, phase: supportState === 'green' ? 'near' : 'far' }
+    },
+    { front_side: { state: 'green' } },
+    { state: 'green' }
+  );
+}
+
+test('ALIGNED ignores VWAP, EMA, and support', () => {
+  const withContextFail = gospelBanner({ emas: false, vwap: false }, 'red');
+  const withContextPass = gospelBanner({ emas: true, vwap: true }, 'green');
+  assert.equal(withContextFail, 'ALIGNED');
+  assert.equal(withContextPass, withContextFail);
+  assert.equal(gospelBanner({ macd: false }, 'green'), 'NOT_ALIGNED');
+});
+
+test('HV sell is red volume above the green bars or a 2x body', () => {
+  const bars = [];
+  let t = Date.parse('2026-10-28T13:30:00Z');
+  for (let i = 0; i < 10; i++) {
+    bars.push({ datetime: t, open: 1, high: 1.02, low: 0.99, close: 1.01, volume: 100 });
+    t += 60000;
+  }
+  const heavy = { datetime: t, open: 1.01, high: 1.02, low: 0.99, close: 1.00, volume: 101 };
+  assert.equal(isHighVolumeSellBar(heavy, [...bars, heavy]), true);
+  const quiet = { datetime: t, open: 1.01, high: 1.02, low: 0.99, close: 1.00, volume: 50 };
+  assert.equal(isHighVolumeSellBar(quiet, [...bars, quiet]), false);
+  const wide = { datetime: t, open: 1.05, high: 1.06, low: 0.90, close: 0.90, volume: 50 };
+  assert.equal(isHighVolumeSellBar(wide, [...bars, wide]), true);
 });

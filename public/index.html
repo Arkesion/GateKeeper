@@ -119,6 +119,8 @@
     .dot.dot-ok { background: #00ff66; }
     .dot.dot-warn { background: #ffaa00; }
     .dot.dot-fail { background: #ff3333; }
+    .dot.dot-context { background: #9aa0a6; }
+    .dot-value { display: block; font-size: 11px; color: #b0b0b0; min-height: 14px; }
 
     .dot-label {
       font-size: 12px;
@@ -495,6 +497,7 @@
     <div class="dot-cell" data-dot="emas">
       <div class="dot" id="dot-emas"></div>
       <span class="dot-label">9/20 EMA (1m)</span>
+      <span class="dot-value" id="val-emas"></span>
       <div class="dot-tip" role="tooltip"></div>
     </div>
     <div class="dot-cell" data-dot="macd">
@@ -505,6 +508,7 @@
     <div class="dot-cell" data-dot="vwap">
       <div class="dot" id="dot-vwap"></div>
       <span class="dot-label">VWAP</span>
+      <span class="dot-value" id="val-vwap"></span>
       <div class="dot-tip" role="tooltip"></div>
     </div>
     <div class="dot-cell" data-dot="no_hv_sell">
@@ -528,6 +532,7 @@
     <div class="dot-cell dot-cell-setup" data-setup="support">
       <div class="dot" id="dot-support"></div>
       <span class="dot-label">Support</span>
+      <span class="dot-value" id="val-support"></span>
       <div class="dot-tip" role="tooltip"></div>
     </div>
     <div class="dot-cell dot-cell-setup" data-setup="momentum">
@@ -651,6 +656,8 @@
     no_hv_sell: 'High-volume sell (8m)',
     spread_ok: 'Spread > $0.10'
   };
+
+  const GOSPEL_FRONT_KEYS = ['macd', 'no_hv_sell', 'spread_ok'];
 
   const DOT_IDS = {
     emas: 'dot-emas',
@@ -852,8 +859,8 @@
     const lines = [];
     const generic = [];
 
-    for (const [key, ok] of Object.entries(frontSide)) {
-      if (ok) continue;
+    for (const key of GOSPEL_FRONT_KEYS) {
+      if (frontSide[key]) continue;
       if (key === 'spread_ok') {
         const s = context?.bid_ask_spread;
         if (s != null && Number.isFinite(s)) {
@@ -884,12 +891,8 @@
   function row2Issues(levelSignals, momentum, giveback) {
     const issues = [];
     const r = levelSignals?.resistance;
-    const s = levelSignals?.support;
     if (r?.state && r.state !== 'green') {
       issues.push(r.reason || `${ROW2_LABELS.resistance}: ${r.phase || r.state}`);
-    }
-    if (s?.state && s.state !== 'green') {
-      issues.push(s.reason || `${ROW2_LABELS.support}: ${s.phase || s.state}`);
     }
     const fs = momentum?.front_side;
     if (fs?.state && fs.state !== 'green') {
@@ -902,19 +905,12 @@
   }
 
   function trafficLightSubtext(confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context) {
-    if (confirmed === 'LOOK_FOR_SETUP') {
-      return 'All 5 GO checks + setup row clear';
-    }
-    if (confirmed === 'NO_ENTRY') {
-      const lines = noEntrySubtextLines(frontSide, warningBars, context);
-      return lines.length ? lines.join('\n') : 'GO check failed';
-    }
-    if (confirmed === 'CAUTION') {
-      const row2 = row2Issues(levelSignals, momentum, giveback);
-      if (row2.length) return row2.join(' · ');
-      return 'Setup row not clear';
-    }
-    return '';
+    if (confirmed !== 'NOT_ALIGNED') return '';
+    const lines = [
+      ...noEntrySubtextLines(frontSide, warningBars, context),
+      ...row2Issues(levelSignals, momentum, giveback)
+    ];
+    return lines.length ? lines.join('\n') : 'Gospel check failed';
   }
 
   function setTrafficLightNeutral() {
@@ -924,20 +920,17 @@
   }
 
   /**
-   * Maps confirmed banner state to CSS class, headline, and NO ENTRY / CAUTION subtext.
-   * @param {string} confirmed - LOOK_FOR_SETUP | CAUTION | NO_ENTRY
+   * Maps confirmed banner state to CSS class and headline.
    */
   function renderTrafficLight(confirmed, frontSide, levelSignals, momentum, giveback, warningBars, context) {
     const cls = {
-      LOOK_FOR_SETUP: 'tl-in_play',
-      CAUTION: 'tl-caution',
-      NO_ENTRY: 'tl-back_side'
+      ALIGNED: 'tl-in_play',
+      NOT_ALIGNED: 'tl-back_side'
     }[confirmed] || '';
     trafficLight.className = cls;
     const titles = {
-      LOOK_FOR_SETUP: 'LOOK FOR SETUP',
-      CAUTION: 'CAUTION',
-      NO_ENTRY: 'NO ENTRY'
+      ALIGNED: 'ALIGNED',
+      NOT_ALIGNED: 'NOT ALIGNED'
     };
     tlHeadline.textContent = titles[confirmed] || '—';
     tlSubtext.textContent = trafficLightSubtext(
@@ -951,12 +944,23 @@
     if (tip) tip.textContent = text || '';
   }
 
-  function renderDots(frontSide, dotHints) {
+  function moneyOrDash(value) {
+    return Number.isFinite(value) ? `$${value.toFixed(2)}` : '—';
+  }
+
+  function renderDots(frontSide, dotHints, context) {
+    const emaEl = document.getElementById('val-emas');
+    const vwapEl = document.getElementById('val-vwap');
+    if (emaEl) {
+      emaEl.textContent = `${moneyOrDash(context?.ema9_1m_value)} / ${moneyOrDash(context?.ema20_1m_value)}`;
+    }
+    if (vwapEl) vwapEl.textContent = moneyOrDash(context?.vwap);
     for (const [key, id] of Object.entries(DOT_IDS)) {
       const el = document.getElementById(id);
       el.className = 'dot';
       if (!frontSide || frontSide[key] == null) continue;
-      el.classList.add(frontSide[key] ? 'dot-ok' : 'dot-fail');
+      if (key === 'emas' || key === 'vwap') el.classList.add('dot-context');
+      else el.classList.add(frontSide[key] ? 'dot-ok' : 'dot-fail');
       const cell = document.querySelector(`.dot-cell[data-dot="${key}"]`);
       bindTip(cell, dotHints?.[key] || CONDITION_LABELS[key]);
     }
@@ -982,7 +986,10 @@
       );
     }
     if (supEl && levelSignals?.support) {
-      applyTriStateDot(supEl, levelSignals.support.state);
+      supEl.className = 'dot dot-context';
+      const price = levelSignals.support.level_price;
+      const val = document.getElementById('val-support');
+      if (val) val.textContent = Number.isFinite(price) ? moneyOrDash(price) : '—';
       bindTip(
         document.querySelector('.dot-cell[data-setup="support"]'),
         levelSignals.support.reason || hints?.support
@@ -1653,7 +1660,7 @@
         data.warning_bars,
         data.context
       );
-      renderDots(data.front_side, data.context?.calc_hints?.dots);
+      renderDots(data.front_side, data.context?.calc_hints?.dots, data.context);
       renderSetupRow(
         data.level_signals,
         data.momentum,
