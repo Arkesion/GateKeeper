@@ -35,6 +35,19 @@ process.on('exit', code => {
   writeDiag(`exit code=${code}`);
 });
 
+function startLagMonitor() {
+  const intervalMs = 100;
+  let expected = Date.now() + intervalMs;
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - expected;
+    expected = now + intervalMs;
+    if (lag > 200) writeDiag(`event loop lag ${lag}ms`);
+  }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+startLagMonitor();
+
 const store = require('./lib/store');
 const { config } = store;
 const auth = require('./lib/auth');
@@ -53,12 +66,19 @@ auth.setOnAuthSuccess(() => {
 });
 
 async function stateHandler(req, res) {
+  const started = Date.now();
   const sym = req.params.symbol.toUpperCase();
   const SYMBOL_PATTERN = config.symbolPattern;
   const TICKER_SUGGESTIONS = config.tickerSuggestions;
+  const finish = (body, code) => {
+    const status = body && body.status ? body.status : 'unknown';
+    writeDiag(`state handler ${sym} ${Date.now() - started}ms status=${status}`);
+    if (code) return res.status(code).json(body);
+    return res.json(body);
+  };
 
   if (!SYMBOL_PATTERN.test(sym)) {
-    return res.json({
+    return finish({
       status: 'invalid_symbol',
       suggestion: TICKER_SUGGESTIONS[sym] || null
     });
@@ -66,31 +86,31 @@ async function stateHandler(req, res) {
 
   if (config.marketDataProvider !== 'webull') {
     if (!(await auth.ensureSchwabAuth())) {
-      return res.json({ status: 'auth_failed' });
+      return finish({ status: 'auth_failed' });
     }
   }
 
   if (config.marketDataProvider === 'webull' && (await state.isStreamTaken())) {
-    return res.json({ status: 'stream_taken' });
+    return finish({ status: 'stream_taken' });
   }
 
   if (config.marketDataProvider === 'webull' && state.isDataStale()) {
-    return res.json({ status: 'data_stale' });
+    return finish({ status: 'data_stale' });
   }
 
   try {
     await state.setActiveSymbol(sym);
   } catch (err) {
     console.error(`Market data (${sym}):`, err.message);
-    return res.json({ status: 'insufficient_data', missing: ['market_data'] });
+    return finish({ status: 'insufficient_data', missing: ['market_data'] });
   }
 
   if (config.marketDataProvider === 'webull' && (await state.isStreamTaken())) {
-    return res.json({ status: 'stream_taken' });
+    return finish({ status: 'stream_taken' });
   }
 
   if (config.marketDataProvider === 'webull' && state.isDataStale()) {
-    return res.json({ status: 'data_stale' });
+    return finish({ status: 'data_stale' });
   }
 
   if (config.marketDataProvider !== 'webull') {
@@ -100,18 +120,18 @@ async function stateHandler(req, res) {
   const cached = store.responseCache[sym];
   if (cached) {
     if (cached.status === 'rate_limited') {
-      return res.status(429).json(cached);
+      return finish(cached, 429);
     }
     if (cached.status === 'auth_failed' && !store.authenticated) {
-      return res.json(cached);
+      return finish(cached);
     }
     if (cached.status === 'auth_failed') {
       delete store.responseCache[sym];
     }
-    return res.json(cached);
+    return finish(cached);
   }
 
-  return res.json({ status: 'insufficient_data', missing: ['initializing'] });
+  return finish({ status: 'insufficient_data', missing: ['initializing'] });
 }
 
 registerRoutes(app, {
