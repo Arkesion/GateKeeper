@@ -320,17 +320,23 @@ def poll_once(reader, account_id):
     return parse_positions(response_json(response)), status or 200
 
 
+def history_bounds(moment):
+    from datetime import timedelta
+    start = moment - timedelta(days=30)
+    stamp = "%Y-%m-%dT%H:%M:%S.000Z"
+    return start.strftime(stamp), moment.strftime(stamp)
+
+
 def read_recent_fills(reader, account_id, now=None):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     from webull.trade.request.v3.get_order_history_request_v2 import OrderHistoryRequestV2
     from webull_data import response_json
     moment = now or datetime.now(timezone.utc)
-    start = moment - timedelta(days=30)
-    stamp = "%Y-%m-%dT%H:%M:%S.000+0000"
+    start, end = history_bounds(moment)
     request = OrderHistoryRequestV2()
     request.set_account_id(account_id)
-    request.set_start_time(start.strftime(stamp))
-    request.set_end_time(moment.strftime(stamp))
+    request.set_start_time(start)
+    request.set_end_time(end)
     response = reader.client.get_response(request)
     status = _http_status(response)
     if status not in (None, 200):
@@ -385,7 +391,12 @@ def run_account(stop_event, redis_client, token_dir, account_id):
         else:
             LOG.info("%s", recent_fill_line(fills))
     except Exception as exc:
-        LOG.info("recent fills failed: %s", type(exc).__name__)
+        code = getattr(exc, "error_code", None)
+        http = getattr(exc, "http_status", None)
+        if http or code:
+            LOG.info("recent fills failed: %s %s", http, code)
+        else:
+            LOG.info("recent fills failed: %s", type(exc).__name__)
 
     seen = set()
 

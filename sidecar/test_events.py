@@ -2,9 +2,12 @@
 
 import unittest
 
+from datetime import datetime, timezone
+
 from events import (
     classify_event_log,
     find_account,
+    history_bounds,
     mask_display,
     parse_account_list,
     parse_order_event,
@@ -101,3 +104,9 @@ class ParseEventsTest(unittest.TestCase):
         self.assertNotIn("4.20", line)
         self.assertNotIn("ord-secret", line)
         self.assertEqual(recent_fill_line([]), "recent fill count=0 last=none")
+
+    def test_history_window_uses_a_z_suffix(self):
+        start, end = history_bounds(datetime(2026, 10, 30, 20, 10, 4, tzinfo=timezone.utc))
+        self.assertEqual(end, "2026-10-30T20:10:04.000Z")
+        self.assertTrue(start.endswith("Z"))
+        self.assertNotIn("+0000", start)
