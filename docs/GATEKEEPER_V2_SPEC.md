@@ -159,23 +159,21 @@ High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; 
 
 Rows marked v1 are summaries. The v1 code's existing definitions and thresholds are the source of truth; port them exactly and change behavior only where this spec says so (the MACD seeding fix).
 
-**Setup line until Phase 3.** The setup title stays IDLE. Price under the 9 EMA is not its own setup state. The Phase 3 state machine below is not on the ladder yet.
+**Phase 3: setup state machine.** One setup state per ticker, recomputed from that ticker's bars on each closed bar and on the throttled forming-bar update. The verdict does not gate it. The card shows the state name, a five-segment bar, and one reason sentence. Segments lit: IDLE 1, SURGE 2, PULLBACK 3, ARMED 4, TRIGGERED 5. FAILED lights none. Gatekeeper never says buy. ARMED while NOT ALIGNED is amber: `Armed · not aligned (2 failing)`, counting red chips only. Every rule's hover names its source.
 
-**Setup line (Phase 3).** One line under the dots reports the state machine, with the trade math pre-computed before any entry. Until that phase ships, the ladder shows IDLE.
+`ARMED · 2-candle pullback → trigger 5.61 · stop 5.41 · R 0.20 · 2R 6.01`
 
-`PULLBACK (2 candles, vol down 38%) → trigger 5.61 · stop 5.40 · R 0.21 · 2R 6.03`
+- **IDLE → SURGE.** A green 1-minute bar (`surgeRequiresGreen`) makes a high above the prior 10 bars, and the latest closed bar's volume is above the average of the prior 20 (`surgeVolumeBaseline: 20bar`). The new high may be the forming bar. Volume is final bars only. [Web page: "moving with high volume"; the 10-bar and 20-bar thresholds are MY OWN]
+- **SURGE → PULLBACK.** The first bar that fails to make a new high, or closes red. The leg high is the high of the surge bars. The leg low is the lowest low of the 5 bars ending at the surge bar (`legLookbackBars`), and a later surge bar can only push it lower. [Web page: "1-3 candle pause"; the 5-bar swing low is MY OWN]
+- **PULLBACK → ARMED**, on the same bar, while every check holds: 1–3 pullback candles [web page]; retrace under 50% of the surge leg, from the highest surge close down to the leg low (`retraceReference: highest_close`) [web page: "shallow"; 50% and the close reference are MY OWN]; no pullback close under the 9 EMA [MY OWN]; pullback volume under the surge bars' average [web page: "volume tapers"]. The card shows ARMED and names the candle count. PULLBACK is logged, not left on screen.
+- **Trigger** is the high of the latest pullback candle. It steps down when a new pullback candle has a lower high. [Web page: "first 1-minute candle breaks its own high after the pullback"] If a half dollar, a whole dollar, or an intraday pivot high sits within 3¢ above that high, the trigger snaps up to the nearest such level. [Web page: "might wait for that clean breakout level"]
+- **Stop** is `max(pullback low − 1¢, trigger − 20¢)`. [Low: web page/PDF; the 20¢ cap is MY OWN] `R = trigger − stop`. The card row shows trigger, stop, R, and 2R. The payload also has 1R and 3R. The in-trade stop below still uses the fill, not this trigger.
+- **ARMED → TRIGGERED.** A live print above the trigger (forming bar). The card says `TRIGGERED 10:05:12 at $3.51` until that bar closes. A close above the trigger returns to SURGE and the leg continues. A close back under the trigger is FAILED.
+- **Any active state → FAILED → IDLE.** Four or more pullback candles ("that's lunch"), a retrace over 50%, a close under the 9 EMA, or a print under the pullback low. The reason stays for the failure bar and the next closed bar, then IDLE. Reasons: `Failed: 4th pullback candle` (a red fourth candle says `Failed: 4th red candle`), `Failed: retrace over 50%`, `Failed: close below the 9 EMA`, `Failed: below pullback low`, `Failed: closed back under the trigger`. Only a fresh surge can arm again.
 
-State rules (diagram below):
+While ARMED or TRIGGERED, the ladder adds a dashed amber trigger line (`TRIGGER 3.50`) and a dotted red planned-stop line. A level within 2¢ of price still sits beside the price pill. These are not new edge markers.
 
-- **Surge:** consecutive green 1-min bars making new highs, volume above the 20-bar average.
-- **Pullback:** 1–3 candles, shallow, volume falling vs. the surge bars.
-- **Armed:** trigger = high of the last pullback candle; bumped up to a .00 or .50 level if within 3¢ below it.
-- **Triggered:** a candle breaks the trigger on rising volume. Ross enters on the first 1-min candle to break its own high after the pullback.
-- **Failed:** more than 3 pullback candles ("that's lunch"), a retrace over 50%, or a close under the 9 EMA. Resets to Idle.
-
-&#91;embedded content: micro-pullback states · 5 forward, 1 fail\]
-
-A failed setup always returns to Idle; only a fresh surge can arm a new trigger.
+Every transition is one line in the signal log: time, ticker, from, to, trigger, stop, reason, and the verdict at that moment.
 
 ## In-trade mode
 
