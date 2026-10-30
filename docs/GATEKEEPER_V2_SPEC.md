@@ -109,7 +109,7 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 | --- | --- | --- |
 | Gospel | MACD positive | Histogram above 0 (MACD line above its signal line). Ross's videos, per Kevin; citation to add |
 | Gospel | No high-volume sell | Red bar volume above the buying (green) bars' volume, or a large red candle. Ross's videos, per Kevin; final bars only |
-| Gospel | Resistance | PDF criterion 2: no nearby resistance |
+| Gospel | Resistance | Daily chart only: no prior-day high or major daily level within N% above price (PDF criterion 2). N starts at 10% (`dailyResistancePct`). Candidates are the highs of completed daily bars before today, the same daily cache used for RVOL. The nearest high above price fails the check inside that band. Pass `✓ Daily clear`. Fail `✕ Daily res. 3.65 +13%`. Missing daily bars do not fail. Intraday pivots and half/whole dollars are ladder levels and Phase 3 break triggers, never a failing check (Ross buys the break of them) |
 | Gospel | Front side | Web page: higher highs and higher lows, early in the breakout |
 | Gospel | Giveback | Web page: shallow pullback; pitfall, too deep |
 | Gospel | Spread ≤ 10¢ | Web page pitfall: wide spreads; 10¢ is MY OWN |
@@ -129,9 +129,19 @@ Context dots render grey with values and never affect the verdict. The verdict r
 
 **Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with six Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
 
+**Chips (revised 2026-10-30).** A chip names the state, not the rule. Every failing chip carries its reason or level. MACD fails as `✕ MACD down`. No high-volume sell passes as `✓ No HV sell` and fails as `✕ HV sell 11:11`, the start time of the latest red bar that tripped the check. Front side, giveback, and spread put the short reason, the giveback percent, or the spread in cents on the fail.
+
+**Intraday pivots (unchanged detector).** A pivot high is a bar whose high is not beaten by any of the 3 bars on the left or the bars on the right. The right side is 3 bars, or fewer at the end of the series, so a fresh high can count before three later bars have printed. Pivot lows use the same window on the lows. An equal neighbor still counts; only a strictly higher high, or a strictly lower low, knocks the swing out. Swings come from today's completed 1-minute bars once at least 7 exist. A separate 48-bar pass builds 5-cent clusters with at least two touches. "Nearest" is a score, not the closest price: candidates beyond `max($0.01, 0.2% of price)` score `touches × 100` plus a half/whole-dollar bonus. Two or more touches beat a single touch. Ties go to the closer price. The most recent swing is always in that pool. The pick is labeled Premarket High, HOD, Whole Dollar, Half Dollar, or Pivot when it sits within `max($0.03, 1.2% of price)` of that kind. It is recomputed on every state refresh. Those rows stay on the ladder. They do not affect ALIGNED.
+
+**Ladder levels.** Price is always its own blue pill. A level within 2¢ of price is not a separate row; its name sits beside the pill (`· 9 EMA`). The 9 EMA line is cyan and the 20 EMA line is magenta. Green and red are only support and resistance. Half- and whole-dollar lines in the zoomed range are faint and labeled `$3.50`. The high-of-day edge marker stays. VWAP gets an edge marker only when it is outside the range (`VWAP 4.14 · +90¢`). No other edge markers.
+
+**Event times.** Every note and warning label is the bar's start time in ET. Live bars use the minute of the trade. An HTTP replace keeps that start; it does not move the label by a minute.
+
+**Setup line until Phase 3.** The setup title stays IDLE. Price under the 9 EMA is not its own setup state. The Phase 3 state machine below is not on the ladder yet.
+
 Rows marked v1 are summaries. The v1 code's existing definitions and thresholds are the source of truth; port them exactly and change behavior only where this spec says so (the MACD seeding fix).
 
-**Setup line.** One line under the dots reports the state machine, with the trade math pre-computed before any entry:
+**Setup line (Phase 3).** One line under the dots reports the state machine, with the trade math pre-computed before any entry. Until that phase ships, the ladder shows IDLE.
 
 `PULLBACK (2 candles, vol down 38%) → trigger 5.61 · stop 5.40 · R 0.21 · 2R 6.03`
 
