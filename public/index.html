@@ -954,7 +954,7 @@
     if (emaEl) {
       emaEl.textContent = `${moneyOrDash(context?.ema9_1m_value)} / ${moneyOrDash(context?.ema20_1m_value)}`;
     }
-    if (vwapEl) vwapEl.textContent = moneyOrDash(context?.vwap);
+    if (vwapEl) vwapEl.textContent = moneyOrDash(context?.vwap_value);
     for (const [key, id] of Object.entries(DOT_IDS)) {
       const el = document.getElementById(id);
       el.className = 'dot';
