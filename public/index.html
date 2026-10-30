@@ -435,6 +435,9 @@
   let insufficientDetail = null;
   let healthData = { authenticated: true, rate_limit_status: 'ok' };
   let dataProvider = '';
+  let marketSession = '';
+  let openPositionSymbol = '';
+  let pillarKey = '';
   let stateAuthFailed = false;
   let feedStale = false;
   let feedTaken = false;
@@ -510,92 +513,143 @@
     if (symbol) localStorage.setItem(STORAGE_KEY, symbol);
   }
 
+  function pillarSignature() {
+    const rows = pillars.map(name => {
+      const q = pillarQuotes[name] || {};
+      const res = q.daily_resistance || {};
+      return [
+        name,
+        name === symbol ? 1 : 0,
+        q.price,
+        q.day_change_pct,
+        q.rvol,
+        q.rvol_color,
+        res.price,
+        res.near ? 1 : 0,
+        res.label,
+        res.pct,
+        openPositionSymbol === name ? 1 : 0
+      ].join(':');
+    });
+    return `${rows.join('|')}|${adding ? 1 : 0}`;
+  }
+
+  function createTickerInput() {
+    const input = document.createElement('input');
+    input.id = 'ticker-input';
+    input.maxLength = 8;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = 'SYMBOL';
+    input.className = 'pillar-add';
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commitAdd(input.value);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        adding = false;
+        renderPillars();
+      }
+    });
+    return input;
+  }
+
+  function buildPillar(name) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pillar' + (name === symbol ? ' active' : '');
+    btn.dataset.symbol = name;
+    const row = document.createElement('span');
+    row.className = 'row';
+    const sym = document.createElement('span');
+    sym.className = 'sym';
+    sym.textContent = name;
+    row.append(sym);
+    const cached = pillarQuotes[name];
+    if (cached && Number.isFinite(cached.day_change_pct)) {
+      const chg = document.createElement('span');
+      const up = cached.day_change_pct >= 0;
+      chg.className = 'chg ' + (up ? 'up' : 'down');
+      chg.textContent = `${up ? '+' : ''}${cached.day_change_pct.toFixed(1)}%`;
+      row.append(chg);
+    }
+    btn.append(row);
+    const sub = document.createElement('span');
+    sub.className = 'px';
+    if (cached && Number.isFinite(cached.price)) sub.append(document.createTextNode(money(cached.price)));
+    if (cached && Number.isFinite(cached.rvol)) {
+      if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
+      const rvol = document.createElement('span');
+      rvol.textContent = formatRvol(cached.rvol);
+      rvol.style.color = cached.rvol_color || '#A3A3A3';
+      sub.append(rvol);
+    }
+    if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
+    const hours = document.createElement('span');
+    hours.textContent = '—';
+    hours.style.color = '#737373';
+    sub.append(hours);
+    sub.append(document.createTextNode(' '));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'x';
+    x.textContent = '×';
+    const blocked = openPositionSymbol === name;
+    if (blocked) x.title = 'Open position — close it before removing';
+    x.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!blocked) removePillar(name);
+    });
+    sub.append(x);
+    btn.append(sub);
+    if (cached?.daily_resistance && Number.isFinite(cached.daily_resistance.price)) {
+      const daily = document.createElement('span');
+      daily.className = 'px';
+      daily.style.color = cached.daily_resistance.near ? '#FBBF24' : '#737373';
+      daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · ${cached.daily_resistance.label || ('+' + cached.daily_resistance.pct + '%')}`;
+      btn.append(daily);
+    }
+    btn.addEventListener('click', () => selectSymbol(name));
+    return btn;
+  }
+
   function renderPillars() {
     const nav = document.getElementById('pillars');
-    nav.replaceChildren();
-    for (const name of pillars) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'pillar' + (name === symbol ? ' active' : '');
-      const row = document.createElement('span');
-      row.className = 'row';
-      const sym = document.createElement('span');
-      sym.className = 'sym';
-      sym.textContent = name;
-      row.append(sym);
-      const cached = pillarQuotes[name];
-      if (cached && Number.isFinite(cached.day_change_pct)) {
-        const chg = document.createElement('span');
-        const up = cached.day_change_pct >= 0;
-        chg.className = 'chg ' + (up ? 'up' : 'down');
-        chg.textContent = `${up ? '+' : ''}${cached.day_change_pct.toFixed(1)}%`;
-        row.append(chg);
-      }
-      btn.append(row);
-      const sub = document.createElement('span');
-      sub.className = 'px';
-      if (cached && Number.isFinite(cached.price)) sub.append(document.createTextNode(money(cached.price)));
-      if (cached && Number.isFinite(cached.rvol)) {
-        if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
-        const rvol = document.createElement('span');
-        rvol.textContent = formatRvol(cached.rvol);
-        rvol.style.color = cached.rvol_color || '#A3A3A3';
-        sub.append(rvol);
-      }
-      if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
-      const hours = document.createElement('span');
-      hours.textContent = '—';
-      hours.style.color = '#737373';
-      sub.append(hours);
-      if (name !== symbol) {
-        sub.append(document.createTextNode(' '));
-        const x = document.createElement('button');
-        x.type = 'button';
-        x.className = 'x';
-        x.textContent = '×';
-        x.addEventListener('click', (event) => {
-          event.stopPropagation();
-          removePillar(name);
-        });
-        sub.append(x);
-      }
-      btn.append(sub);
-      if (cached?.daily_resistance && Number.isFinite(cached.daily_resistance.price)) {
-        const daily = document.createElement('span');
-        daily.className = 'px';
-        daily.style.color = cached.daily_resistance.near ? '#FBBF24' : '#737373';
-        daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · ${cached.daily_resistance.label || ('+' + cached.daily_resistance.pct + '%')}`;
-        btn.append(daily);
-      }
-      btn.addEventListener('click', () => selectSymbol(name));
-      nav.append(btn);
+    const key = pillarSignature();
+    if (key === pillarKey) return;
+    pillarKey = key;
+    let input = nav.querySelector('input#ticker-input');
+    if (input && !adding) {
+      input.remove();
+      input = null;
     }
-    if (pillars.length < 3) {
-      if (adding) {
-        const input = document.createElement('input');
-        input.id = 'ticker-input';
-        input.maxLength = 8;
-        input.autocomplete = 'off';
-        input.spellcheck = false;
-        input.placeholder = 'SYMBOL';
-        input.className = 'pillar-add';
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') commitAdd(input.value);
-          if (event.key === 'Escape') { adding = false; renderPillars(); }
-        });
-        input.addEventListener('blur', () => commitAdd(input.value));
+    for (const child of [...nav.children]) {
+      if (child === input) continue;
+      child.remove();
+    }
+    for (const name of pillars) nav.insertBefore(buildPillar(name), input);
+    if (pillars.length >= 3) {
+      if (input) input.remove();
+      adding = false;
+      pillarKey = pillarSignature();
+      return;
+    }
+    if (adding) {
+      if (!input) {
+        input = createTickerInput();
         nav.append(input);
         input.focus();
-      } else {
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'pillar-add';
-        add.id = 'ticker-input';
-        add.textContent = '+ add ticker';
-        add.addEventListener('click', () => { adding = true; renderPillars(); });
-        nav.append(add);
       }
+      return;
     }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'pillar-add';
+    add.id = 'ticker-add';
+    add.textContent = '+ add ticker';
+    add.addEventListener('click', () => { adding = true; renderPillars(); });
+    nav.append(add);
   }
 
   function commitAdd(raw) {
@@ -609,11 +663,25 @@
   }
 
   function removePillar(name) {
+    if (openPositionSymbol === name) return;
+    const index = pillars.indexOf(name);
+    const previous = pillars.slice();
+    const quote = pillarQuotes[name];
     delete pillarQuotes[name];
     pillars = pillars.filter(item => item !== name);
     savePillars();
-    if (symbol === name) selectSymbol(pillars[0] || '');
+    const wasSelected = symbol === name;
+    if (wasSelected) selectSymbol(pillars[index] || pillars[pillars.length - 1] || '');
     else renderPillars();
+    fetchJson(`/api/symbols/${encodeURIComponent(name)}/unwatch`, { method: 'POST' }).then(({ status }) => {
+      if (status !== 409) return;
+      openPositionSymbol = name;
+      pillars = previous;
+      if (quote) pillarQuotes[name] = quote;
+      savePillars();
+      if (wasSelected) selectSymbol(name);
+      else renderPillars();
+    }).catch(() => {});
   }
 
   function selectSymbol(next) {
@@ -1317,12 +1385,25 @@
   }
 
   function renderLiveAge() {
-    const age = Number.isFinite(lastPrintAtMs) ? formatAgo(lastPrintAtMs) : (lastSuccessAt ? formatAgo(lastSuccessAt) : '');
     const pretty = dataProvider === 'webull' ? 'Webull' : dataProvider === 'schwab' ? 'Schwab' : '';
     const bits = ['LIVE'];
     if (pretty) bits.push(pretty);
-    if (age) bits.push(age);
-    document.getElementById('live-age').innerHTML = `<span class="live">${bits.join(' · ')}</span>`;
+    const seconds = Number.isFinite(lastPrintAtMs)
+      ? Math.max(0, Math.round((Date.now() - lastPrintAtMs) / 1000))
+      : null;
+    const box = document.getElementById('live-age');
+    box.replaceChildren();
+    const live = document.createElement('span');
+    live.className = 'live';
+    live.textContent = `${bits.join(' · ')} · `;
+    const age = document.createElement('span');
+    age.textContent = seconds == null ? 'last trade —' : `last trade ${seconds}s`;
+    if (seconds != null && seconds >= 60) {
+      age.style.color = marketSession === 'RTH' ? '#FBBF24' : '#737373';
+    } else {
+      age.className = 'live';
+    }
+    box.append(live, age);
   }
 
   function renderState(data) {
@@ -1341,6 +1422,8 @@
       daily.className = '';
     }
     if (data.provider) dataProvider = data.provider;
+    if (data.market_session) marketSession = data.market_session;
+    openPositionSymbol = data.position?.symbol ? String(data.position.symbol).toUpperCase() : '';
     renderLiveAge();
     renderPillars();
     renderVerdict(data);
@@ -1643,11 +1726,7 @@
     overlayTimer = setInterval(() => {
       if (activeOverlayId === 'stale') renderStaleAge();
       if (activeOverlayId === 'unreachable') renderUnreachableAge();
-      const age = document.querySelector('#live-age .live');
-      if (age && hasReceivedOk) {
-        const stamp = Number.isFinite(lastPrintAtMs) ? lastPrintAtMs : lastSuccessAt;
-        age.textContent = 'LIVE' + (stamp ? ' · ' + formatAgo(stamp) : '');
-      }
+      if (hasReceivedOk) renderLiveAge();
     }, 1000);
     if (symbol) {
       waitingForData = true;

@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { utcFromEtDateTime } = require('../lib/session');
+const { noteAccount, getAccountSnapshot, fillWatchOf } = require('../lib/providers/webull-provider');
 const {
   applyFill,
   applyMarket,
@@ -315,6 +316,53 @@ test('a restart keeps logged R and estimates the trade that has no log', () => {
   assert.equal(session.r_estimated, true);
   assert.equal(session.lockout_reason, 'r');
   assert.equal(viewOf(session, null, now, opts).session.lockout, 'day');
+});
+
+test('schwab market data still books a webull fill and a lockout', () => {
+  const opts = tempOpts();
+  const snap = {
+    status: 'ok',
+    ordersStream: 'connected',
+    positionsPollAt: NOW,
+    openPositions: 1,
+    positions: [{ symbol: 'TNMG', shares: 1, average: 4.2 }],
+    fills: [{ id: 'tnmg-buy', symbol: 'TNMG', side: 'BUY', shares: 1, price: 4.2, ts: NOW }],
+    dayFills: null
+  };
+  noteAccount(snap);
+  const watch = fillWatchOf(getAccountSnapshot());
+  assert.equal(watch.orders_stream, 'connected');
+  assert.equal(watch.open_positions, 1);
+  const open = applyMarket({
+    symbol: 'TNMG',
+    price: 4.5,
+    now: NOW,
+    lastBarLow: 4.05,
+    account: getAccountSnapshot()
+  }, opts);
+  assert.equal(open.position.symbol, 'TNMG');
+  assert.equal(open.account.status, 'ok');
+
+  const during = utcFromEtDateTime('2026-10-26', 16, 0);
+  const lockedOpts = tempOpts();
+  noteAccount({
+    status: 'ok',
+    ordersStream: 'connected',
+    positionsPollAt: during,
+    openPositions: 0,
+    positions: [],
+    fills: [],
+    dayFills: CLRO
+  });
+  const locked = applyMarket({
+    symbol: 'TNMG',
+    price: 4.5,
+    now: during,
+    account: getAccountSnapshot()
+  }, lockedOpts);
+  assert.equal(locked.position, null);
+  assert.equal(locked.session.lockout, 'day');
+  noteAccount(null);
 });
 
 test('failing checks are the red chips only', () => {

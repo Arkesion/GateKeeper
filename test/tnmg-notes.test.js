@@ -319,6 +319,9 @@ test('a near-zero giveback leg does not print a huge percent', () => {
   const dumped = computeGivebackSignal(leg, 3.11);
   assert.equal(dumped.pct, 100);
   assert.equal(dumped.state, 'red');
+  const above = computeGivebackSignal(leg, 4.20);
+  assert.equal(above.pct, 0);
+  assert.equal(above.state, 'green');
   const none = computeGivebackSignal([
     { datetime: start, open: 4.10, high: 4.12, low: 4.00, close: 4.02, volume: 1000 }
   ], 4.02);

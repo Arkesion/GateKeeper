@@ -54,6 +54,13 @@ const auth = require('./lib/auth');
 const schwab = require('./lib/schwab');
 const state = require('./lib/state');
 const { getProvider } = require('./lib/providers');
+const {
+  getAccountSnapshot,
+  accountStatusOf,
+  fillWatchOf,
+  startAccountFeed,
+  stopAccountFeed
+} = require('./lib/providers/webull-provider');
 const halts = require('./lib/halts');
 const registerRoutes = require('./routes/api');
 
@@ -155,33 +162,9 @@ registerRoutes(app, {
   ),
   getLastSuccessfulFetch: () => store.lastSuccessfulFetch,
   getRateLimitStatus: () => store.rateLimitStatus,
-  getAccountStatus: () => {
-    if (config.marketDataProvider !== 'webull') return null;
-    try {
-      const status = getProvider().accountSnapshot?.status;
-      return status ? { status } : null;
-    } catch {
-      return null;
-    }
-  },
-  getFillWatch: () => {
-    if (config.marketDataProvider !== 'webull') {
-      return { orders_stream: null, positions_poll_age_s: null, open_positions: null };
-    }
-    try {
-      const snap = getProvider().accountSnapshot;
-      const at = Number(snap?.positionsPollAt);
-      const age = Number.isFinite(at) ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null;
-      const open = Number(snap?.openPositions);
-      return {
-        orders_stream: snap?.ordersStream || null,
-        positions_poll_age_s: age,
-        open_positions: Number.isFinite(open) ? open : null
-      };
-    } catch {
-      return { orders_stream: null, positions_poll_age_s: null, open_positions: null };
-    }
-  },
+  getAccountStatus: () => accountStatusOf(getAccountSnapshot()),
+  getFillWatch: () => fillWatchOf(getAccountSnapshot()),
+  releaseSymbol: symbol => state.releaseSymbol(symbol),
   getStreamStatus: async () => {
     if (config.marketDataProvider !== 'webull') return null;
     const provider = getProvider();
@@ -216,6 +199,7 @@ let httpServer = null;
 function shutdown(signal) {
   writeDiag(`${signal}: shutting down Gatekeeper`);
   state.stopSymbolRefresh();
+  stopAccountFeed();
   if (config.marketDataProvider === 'webull') {
     getProvider().stop().catch(() => {});
   }
@@ -273,6 +257,7 @@ async function init() {
     console.log('Webull provider reading Redis');
     return;
   }
+  await startAccountFeed();
   await initAuthOnStartup();
 }
 

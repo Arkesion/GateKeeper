@@ -128,7 +128,7 @@ Context dots render grey with values and never affect the verdict. The verdict r
 | Large sell candle | ✓ No big red | ✕ Big red 14:02 | Red body ≥ 2× the 10-bar median body. Decay below |
 | Topping tail | ✓ No tail | ✕ Tail 14:02 | Spec tail rule. Decay below. The hover says Topping tail |
 | Front side | ✓ Front side | ✕ Choppy | Higher highs and higher lows |
-| Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg, capped at 100%. `Giveback —` when there is no leg or the leg is under $0.05 |
+| Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg, floored at 0 and capped at 100%. `Giveback —` when there is no leg or the leg is under $0.05 |
 | Spread | ✓ Spread 1¢ | ✕ Spread 14¢ | ≤ 10¢ (MY OWN number) |
 
 High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; citations to add. Daily-chart resistance shows in the ticker header and on the pillar tab, muted, amber when the nearest prior high is within 10%. A gap under 1% prints cents, the same format as the ladder (`Daily res. 3.42 · +1¢`). At or above 1% it stays a percent (`Daily res. 3.54 · +3%`). It does not change ALIGNED.

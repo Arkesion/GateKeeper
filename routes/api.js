@@ -48,6 +48,15 @@ module.exports = function registerRoutes(app, deps) {
     });
   });
 
+  app.post('/api/symbols/:symbol/unwatch', async (req, res) => {
+    if (typeof deps.releaseSymbol !== 'function') {
+      return res.status(400).json({ ok: false });
+    }
+    const result = await deps.releaseSymbol(req.params.symbol);
+    const status = result.status || (result.ok ? 200 : 400);
+    return res.status(status).json(result);
+  });
+
   app.post('/api/stream/reclaim', async (req, res) => {
     if (config.marketDataProvider !== 'webull' || !deps.reclaimStream) {
       return res.status(400).json({ ok: false, error: 'not webull' });

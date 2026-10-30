@@ -12,7 +12,7 @@ Three processes, one Redis.
 - **Redis** is the bus. The sidecar writes bars, quotes, heartbeats, and account keys. The app reads them.
 - **gatekeeper** is the Node app. It turns those bars into the rail: indicators, the setup machine, tape slowdown, and the session book.
 
-`MARKET_DATA_PROVIDER` chooses the market-data source: `webull` or `schwab`. Schwab mode polls the Schwab HTTP API instead of the sidecar's tick stream. Account fills, positions, and lockouts are still read from the Webull sidecar, and only when the market-data provider is `webull`. In Schwab mode those live account updates do not apply.
+`MARKET_DATA_PROVIDER` chooses the market-data source: `webull` or `schwab`. Schwab mode polls the Schwab HTTP API instead of the sidecar's tick stream. Fills, positions, session risk, and lockouts come from the Webull account (`WEBULL_ACCOUNT_ID`) either way. Schwab mode still has no Nasdaq prints, so tape slowdown stays `n/a in Schwab mode`.
 
 ## Market-data provider
 
