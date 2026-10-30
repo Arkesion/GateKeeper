@@ -434,6 +434,7 @@
   let insufficientMissing = [];
   let insufficientDetail = null;
   let healthData = { authenticated: true, rate_limit_status: 'ok' };
+  let dataProvider = '';
   let stateAuthFailed = false;
   let feedStale = false;
   let feedTaken = false;
@@ -1293,7 +1294,7 @@
       ['1R reached', Number.isFinite(away) && away <= 0 ? 'reached' : (Number.isFinite(away) ? `not yet · ${cents(-away).replace('−', '')} away` : '—')],
       ['Topping tail', tail ? `${tail.time}` : 'none'],
       ['Lost 9 EMA', lost ? 'lost' : 'holding'],
-      ['Tape', data.tape ? data.tape.text : '—']
+      ['Tape', (data.provider || dataProvider) === 'schwab' ? 'n/a in Schwab mode' : (data.tape ? data.tape.text : '—')]
     ];
     const box = document.getElementById('exit-rows');
     box.replaceChildren();
@@ -1306,13 +1307,22 @@
       const right = document.createElement('span');
       right.className = 'state';
       right.textContent = state;
-      if (label === 'Tape' && data.tape) {
+      if (label === 'Tape' && data.tape && (data.provider || dataProvider) !== 'schwab') {
         right.style.color = '#FBBF24';
         row.title = data.tape.hover || '';
       }
       row.append(left, right);
       box.append(row);
     }
+  }
+
+  function renderLiveAge() {
+    const age = Number.isFinite(lastPrintAtMs) ? formatAgo(lastPrintAtMs) : (lastSuccessAt ? formatAgo(lastSuccessAt) : '');
+    const pretty = dataProvider === 'webull' ? 'Webull' : dataProvider === 'schwab' ? 'Schwab' : '';
+    const bits = ['LIVE'];
+    if (pretty) bits.push(pretty);
+    if (age) bits.push(age);
+    document.getElementById('live-age').innerHTML = `<span class="live">${bits.join(' · ')}</span>`;
   }
 
   function renderState(data) {
@@ -1330,8 +1340,8 @@
       daily.textContent = '';
       daily.className = '';
     }
-    const age = Number.isFinite(lastPrintAtMs) ? formatAgo(lastPrintAtMs) : (lastSuccessAt ? formatAgo(lastSuccessAt) : '');
-    document.getElementById('live-age').innerHTML = `<span class="live">LIVE${age ? ' · ' + age : ''}</span>`;
+    if (data.provider) dataProvider = data.provider;
+    renderLiveAge();
     renderPillars();
     renderVerdict(data);
     renderSetup(data);
@@ -1514,6 +1524,8 @@
       const { ok, data } = await fetchJson('/api/health');
       if (!ok || !data) return;
       healthData = data;
+      if (data.provider) dataProvider = data.provider;
+      renderLiveAge();
       if (data.stream === 'stream_taken') feedTaken = true;
       else if (data.stream === 'streaming') feedTaken = false;
       renderAccount(data.account?.status);
