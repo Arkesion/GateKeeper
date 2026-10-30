@@ -377,6 +377,26 @@ def _num(value):
     return float(value)
 
 
+def book_top(book):
+    """Best bid and best ask. Live NBBO is the QUOTE book; snapshots have no bid or ask."""
+    def prices(name):
+        levels = book.get(name) if isinstance(book, dict) else getattr(book, name, None)
+        out = []
+        for level in levels or []:
+            raw = level.get("price") if isinstance(level, dict) else getattr(level, "price", None)
+            try:
+                px = _num(raw)
+            except (TypeError, ValueError):
+                px = None
+            if px is not None:
+                out.append(px)
+        return out
+
+    bids = prices("bids")
+    asks = prices("asks")
+    return (max(bids) if bids else None, min(asks) if asks else None)
+
+
 def quote_from_trade(price, pre_close, bid=None, ask=None, last_print_at=None):
     quote = {
         "lastPrice": price,

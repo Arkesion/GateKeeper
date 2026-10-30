@@ -12,6 +12,8 @@ const {
   isBearishBar,
   isToppingTailBar,
   formatEtHm,
+  formatChartHm,
+  pricePillLabel,
   macdGospelPositive,
   buildNotes,
   relativeVolume,
@@ -121,11 +123,11 @@ test('TNMG notes name the tail, the support hold, and the large buy', () => {
   const held = notes.find(note => note.text.startsWith('Held support'));
   const buy = notes.find(note => note.text === 'Large buy volume');
   assert.equal(tail && tail.side, 'BEAR');
-  assert.equal(tail && tail.time, '09:41');
+  assert.equal(tail && tail.time, '09:42');
   assert.equal(buy && buy.side, 'BULL');
-  assert.equal(buy && buy.time, '10:02');
+  assert.equal(buy && buy.time, '10:03');
   assert.equal(held && held.side, 'BULL');
-  assert.equal(held && held.time, '10:15');
+  assert.equal(held && held.time, '10:16');
 });
 
 test('RVOL uses the prior 10 completed days and not today', () => {
@@ -157,6 +159,13 @@ test('daily resistance fails only when the nearest prior high is within 10%', ()
   assert.equal(near.state, 'red');
   assert.equal(near.level_price, 3.5);
   assert.equal(near.reason, 'Daily res. 3.50 +8%');
+  const penny = computeResistanceSignal(3.41, [bar(yesterday, 3.42)], now);
+  assert.equal(penny.state, 'red');
+  assert.equal(penny.distance_label, '+1¢');
+  assert.equal(penny.reason, 'Daily res. 3.42 +1¢');
+  const flat = computeResistanceSignal(3.424, [bar(yesterday, 3.426)], now);
+  assert.equal(flat.distance_label, '+0¢');
+  assert.equal(flat.reason, 'Daily res. 3.43 +0¢');
   const ignored = computeResistanceSignal(3.23, [bar(yesterday, 4), bar(today, 3.30)], now);
   assert.equal(ignored.state, 'green');
   assert.equal(ignored.level_price, 4);
@@ -222,8 +231,32 @@ test('11:10 volume and body chips cite that bar separately', () => {
   const sell = series[series.length - 1];
   const now = sell.datetime + 30000;
   assert.equal(formatEtHm(sell.datetime), '11:10');
+  assert.equal(formatChartHm(sell.datetime), '11:11');
   assert.equal(isHighVolumeSellBar(sell, series), true);
   assert.equal(isLargeSellCandleBar(sell, series), true);
-  assert.equal(latestHvSellTime(series, now), '11:10');
-  assert.equal(latestLargeSellTime(series, now), '11:10');
+  assert.equal(latestHvSellTime(series, now), '11:11');
+  assert.equal(latestLargeSellTime(series, now), '11:11');
+});
+
+test('chart label is the 12:20 start bar plus one minute', () => {
+  // Closed HTTP bar, TNMG 2026-10-30. Start 16:20Z is 12:20 ET. High 3.60, volume 78594.
+  const start = Date.parse('2026-10-30T16:20:00.000Z');
+  const bar = { datetime: start, open: 3.48, high: 3.6, low: 3.47, close: 3.55, volume: 78594 };
+  assert.equal(formatEtHm(bar.datetime), '12:20');
+  assert.equal(bar.volume, 78594);
+  assert.equal(bar.high, 3.6);
+  assert.equal(formatChartHm(bar.datetime), '12:21');
+});
+
+test('price pill keeps one level name and counts the rest', () => {
+  const names = [
+    { name: '9 EMA', role: 'ema9' },
+    { name: 'Pivot', role: 'pivot' },
+    { name: 'Resistance · Pivot', role: 'resistance' },
+    { name: 'VWAP', role: 'vwap' }
+  ];
+  const pill = pricePillLabel(names, false);
+  assert.equal(pill.label, 'PRICE · Resistance · Pivot +3');
+  assert.equal(pill.title, 'Resistance · Pivot · VWAP · 9 EMA · Pivot');
+  assert.equal(pricePillLabel([], false).label, 'PRICE');
 });

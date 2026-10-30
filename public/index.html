@@ -540,7 +540,7 @@
         const daily = document.createElement('span');
         daily.className = 'px';
         daily.style.color = cached.daily_resistance.near ? '#FBBF24' : '#737373';
-        daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · +${cached.daily_resistance.pct}%`;
+        daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · ${cached.daily_resistance.label || ('+' + cached.daily_resistance.pct + '%')}`;
         btn.append(daily);
       }
       btn.addEventListener('click', () => selectSymbol(name));
@@ -689,7 +689,18 @@
         hints.spread_ok
       )
     ];
-    const failing = [
+    const failing = failingCount(data);
+    count.textContent = failing ? `${failing} of 7 failing` : '7 of 7';
+    count.className = failing ? 'bad' : 'ok';
+    const box = document.getElementById('chips');
+    box.replaceChildren(...items);
+  }
+
+  function failingCount(data) {
+    const fs = data?.front_side || {};
+    const front = data?.momentum?.front_side;
+    const gb = data?.giveback;
+    return [
       fs.macd === false,
       fs.no_hv_sell === false,
       fs.no_big_red === false,
@@ -698,17 +709,6 @@
       gb?.state === 'red',
       fs.spread_ok === false
     ].filter(Boolean).length;
-    count.textContent = failing ? `${failing} of 7 failing` : '7 of 7';
-    count.className = failing ? 'bad' : 'ok';
-    const box = document.getElementById('chips');
-    box.replaceChildren(...items);
-  }
-
-  function setupSegments(phase) {
-    if (phase === 'trending') return 5;
-    if (phase === 'consolidating') return 3;
-    if (phase === 'choppy') return 2;
-    return 1;
   }
 
   function renderSetup() {
@@ -738,15 +738,37 @@
     }
   }
 
+  function inMiddleThird(price, box) {
+    const span = box.hi - box.lo;
+    if (!(span > 0)) return false;
+    const pad = span / 3;
+    return price >= box.lo + pad - 1e-9 && price <= box.hi - pad + 1e-9;
+  }
+
   function zoomFor(price, extraLo, extraHi) {
     if (!Number.isFinite(price)) return view;
-    const nearEdge = view && (price > view.hi - EDGE || price < view.lo + EDGE);
-    if (!view || nearEdge) {
+    if (!view || !inMiddleThird(price, view)) {
       view = { lo: price - ZOOM, hi: price + ZOOM };
     }
     if (Number.isFinite(extraLo)) view = { lo: Math.min(view.lo, extraLo), hi: view.hi };
     if (Number.isFinite(extraHi)) view = { lo: view.lo, hi: Math.max(view.hi, extraHi) };
+    if (view && !inMiddleThird(price, view)) {
+      const half = (view.hi - view.lo) / 2;
+      view = { lo: price - half, hi: price + half };
+    }
     return view;
+  }
+
+  function pricePillLabel(names, sameEntry) {
+    const rank = { resistance: 0, support: 1, vwap: 2, ema9: 3, ema20: 3 };
+    const ordered = (names || []).slice().sort((a, b) => (rank[a.role] ?? 9) - (rank[b.role] ?? 9));
+    const head = sameEntry ? 'PRICE = ENTRY' : 'PRICE';
+    if (!ordered.length) return { label: head, title: '' };
+    const extra = ordered.length - 1;
+    const label = extra
+      ? `${head} · ${ordered[0].name} +${extra}`
+      : `${head} · ${ordered[0].name}`;
+    return { label, title: ordered.map(item => item.name).join(' · ') };
   }
 
   function clusterLevels(levels, gap) {
@@ -881,7 +903,7 @@
     const beside = [];
     const apart = [];
     for (const level of levels) {
-      if (Math.abs(level.price - price) <= EDGE) beside.push(level.name);
+      if (Math.abs(level.price - price) <= EDGE) beside.push({ name: level.name, role: level.role });
       else apart.push(level);
     }
     const pivotHover = 'Intraday pivot: 3 bars each side, fewer on the right at the end of the series. Scored by touches, not the closest price. Not a Gospel check.';
@@ -901,12 +923,13 @@
       if (level.roles.includes('resistance') || level.roles.includes('support')) el.title = pivotHover;
       rows.push({ y: yOf(level.price, box, height), el });
     }
-    const priceName = [sameEntry ? 'PRICE = ENTRY' : 'PRICE', ...beside].join(' · ');
-    rows.push({ y: yOf(price, box, height), el: rung(0, priceName, '', '', '#60A5FA'), price: true });
+    const pill = pricePillLabel(beside, sameEntry);
+    rows.push({ y: yOf(price, box, height), el: rung(0, pill.label, '', '', '#60A5FA'), price: true });
     const priceRow = rows[rows.length - 1].el;
-    const pill = priceRow.querySelector('.mark');
-    pill.className = 'price-pill';
-    pill.textContent = px(price);
+    if (pill.title) priceRow.title = pill.title;
+    const mark = priceRow.querySelector('.mark');
+    mark.className = 'price-pill';
+    mark.textContent = px(price);
     priceRow.querySelector('.name').style.fontWeight = '700';
     const quoteVal = priceRow.querySelector('.val');
     if (Number.isFinite(ctx.bid) && Number.isFinite(ctx.ask)) {
@@ -1060,7 +1083,7 @@
     const daily = document.getElementById('header-daily');
     const info = ctx.daily_resistance;
     if (info && Number.isFinite(info.price)) {
-      daily.textContent = `Daily res. ${px(info.price)} · +${info.pct}%`;
+      daily.textContent = `Daily res. ${px(info.price)} · ${info.label || ('+' + info.pct + '%')}`;
       daily.className = info.near ? 'near' : '';
     } else {
       daily.textContent = '';
@@ -1070,7 +1093,7 @@
     document.getElementById('live-age').innerHTML = `<span class="live">LIVE${age ? ' · ' + age : ''}</span>`;
     renderPillars();
     renderVerdict(data);
-    renderSetup(data.momentum?.front_side);
+    renderSetup();
     renderNotes(data.notes);
     const plan = TRADE ? tradePlan(data) : null;
     if (plan) renderTrade(data, plan);

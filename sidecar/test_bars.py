@@ -4,7 +4,9 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from bars import MinuteBarBuilder, normalize_bar
+from types import SimpleNamespace
+
+from bars import MinuteBarBuilder, book_top, normalize_bar
 
 ET = ZoneInfo("America/New_York")
 
@@ -48,6 +50,18 @@ class LiveBarStartTest(unittest.TestCase):
         self.assertEqual(replaced[0]["close"], 3.17)
         self.assertEqual(replaced[0]["volume"], 98815)
         self.assertEqual(label(builder.forming["datetime"]), "11:11")
+
+
+class QuoteBookTest(unittest.TestCase):
+    def test_best_bid_and_ask_ignore_deeper_levels(self):
+        book = SimpleNamespace(
+            bids=[SimpleNamespace(price="3.42"), SimpleNamespace(price="3.54")],
+            asks=[SimpleNamespace(price="3.60"), SimpleNamespace(price="3.55")],
+        )
+        self.assertEqual(book_top(book), (3.54, 3.55))
+
+    def test_empty_book_does_not_invent_a_price(self):
+        self.assertEqual(book_top(SimpleNamespace(bids=[], asks=[])), (None, None))
 
 
 if __name__ == "__main__":

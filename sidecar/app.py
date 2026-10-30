@@ -18,6 +18,7 @@ import redis
 
 from bars import (
     MinuteBarBuilder,
+    book_top,
     quote_from_trade,
     session_window,
     snapshot_trade,
@@ -59,6 +60,8 @@ class Sidecar:
         self.subscribed = set()
         self.logged_sessions = set()
         self.taken = threading.Event()
+        self.rates = {}
+        self.rate_lock = threading.Lock()
 
     def run(self):
         logging.basicConfig(
@@ -81,6 +84,7 @@ class Sidecar:
         self.token_dir = token_dir
         self.data = make_data_client(token_dir)
         threading.Thread(target=self._mqtt_loop, name="mqtt", daemon=True).start()
+        threading.Thread(target=self._rate_loop, name="rate", daemon=True).start()
         threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True).start()
         LOG.info("sidecar ready http=%s mqtt=%s", http_host, mqtt_host)
         self._commands()
@@ -239,9 +243,36 @@ class Sidecar:
         if topic == "snapshot":
             for snap in items:
                 self._on_snapshot(snap)
+            return
+        if topic == "quote":
+            for book in items:
+                self._on_quote(book)
+
+    def _bump(self, kind, symbol):
+        if not symbol:
+            return
+        with self.rate_lock:
+            bucket = self.rates.setdefault(symbol, {"tick": 0, "quote": 0, "snapshot": 0})
+            bucket[kind] += 1
+
+    def _rate_loop(self):
+        while not self.stop.wait(10):
+            with self.rate_lock:
+                rows = [(symbol, dict(counts)) for symbol, counts in self.rates.items()]
+                for counts in self.rates.values():
+                    counts["tick"] = counts["quote"] = counts["snapshot"] = 0
+            for symbol, counts in rows:
+                LOG.info(
+                    "rate symbol=%s ticks=%s quotes=%s snapshots=%s",
+                    symbol,
+                    counts["tick"],
+                    counts["quote"],
+                    counts["snapshot"],
+                )
 
     def _on_tick(self, tick):
         symbol, price, size, trade_ms, bucket, session = tick_print(tick)
+        self._bump("tick", symbol)
         if session and session not in self.logged_sessions:
             self.logged_sessions.add(str(session))
             LOG.info("tick session label=%s", session)
@@ -278,6 +309,7 @@ class Sidecar:
         symbol = getattr(getattr(snap, "basic", None), "symbol", None)
         if symbol:
             symbol = symbol.upper()
+        self._bump("snapshot", symbol)
         if session and session not in self.logged_sessions:
             self.logged_sessions.add(session)
             LOG.info("snapshot session label=%s", session)
@@ -300,6 +332,40 @@ class Sidecar:
                 prev.get("lastPrintAt"),
             )
             self.quotes[symbol] = quote
+        self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
+        self.redis.publish(
+            f"gk:live:{symbol}",
+            json.dumps({"quote": quote, "forming": None, "closed": None}),
+        )
+
+    def _on_quote(self, book):
+        """QUOTE is the live order book. Snapshot messages do not carry bid or ask."""
+        basic = book.get("basic") if isinstance(book, dict) else getattr(book, "basic", None)
+        symbol = basic.get("symbol") if isinstance(basic, dict) else getattr(basic, "symbol", None)
+        if symbol:
+            symbol = str(symbol).upper()
+        self._bump("quote", symbol)
+        if not symbol:
+            return
+        bid, ask = book_top(book)
+        with self.lock:
+            if symbol not in self.builders:
+                return
+            prev = self.quotes.get(symbol) or {}
+            if bid is None:
+                bid = prev.get("bidPrice")
+            if ask is None:
+                ask = prev.get("askPrice")
+            quote = quote_from_trade(
+                prev.get("lastPrice"),
+                prev.get("closePrice"),
+                bid,
+                ask,
+                prev.get("lastPrintAt"),
+            )
+            self.quotes[symbol] = quote
+        if quote.get("lastPrice") is None:
+            return
         self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
         self.redis.publish(
             f"gk:live:{symbol}",
@@ -505,14 +571,14 @@ class Sidecar:
             self.stream.get_session_id(),
             [symbol],
             Category.US_STOCK.name,
-            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name],
+            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name, SubscribeType.QUOTE.name],
         )
         status = getattr(response, "status_code", None)
         if status != 200:
             raise RuntimeError(f"subscribe failed status={status}")
         with self.lock:
             self.subscribed.add(symbol)
-        LOG.info("subscribed SNAPSHOT+TICK %s", symbol)
+        LOG.info("subscribed SNAPSHOT+TICK+QUOTE %s", symbol)
 
     def _unsubscribe(self, symbol):
         from webull.data.common.category import Category
@@ -525,7 +591,7 @@ class Sidecar:
             self.stream.get_session_id(),
             [symbol],
             Category.US_STOCK.name,
-            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name],
+            [SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name, SubscribeType.QUOTE.name],
         )
 
     def _ack(self, cmd_id, ok, error):
