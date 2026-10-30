@@ -329,7 +329,7 @@ def session_bucket(session, trade_ms=None):
 
 
 def tick_print(tick):
-    """Price, trade size, time, and session bucket from one tick message."""
+    """Price, trade size, time, side, and session bucket from one tick message."""
     basic = getattr(tick, "basic", None)
     session = getattr(basic, "trading_session", None) if basic is not None else None
     symbol = getattr(basic, "symbol", None) if basic is not None else None
@@ -342,7 +342,9 @@ def tick_print(tick):
     bucket = session_bucket(session, trade_ms)
     if symbol:
         symbol = str(symbol).upper()
-    return symbol, price, size, trade_ms, bucket, session
+    raw_side = getattr(tick, "side", None)
+    side = str(raw_side) if raw_side not in (None, "") else None
+    return symbol, price, size, trade_ms, bucket, session, side
 
 
 def snapshot_trade(snap):

@@ -112,8 +112,18 @@ test('notes are one side each, one bar each, and do not change ALIGNED', () => {
   synth.push({ datetime: t, open: 4.15, high: 4.16, low: 4.14, close: 4.145, volume: 1000 });
   const quiet = buildNotes(synth, { vwap: 5, ema9: 4.5, ema20: 4.6 });
   const pause = quiet.find(note => note.text.startsWith('Consolidating near $'));
-  assert.ok(pause, 'tape slowdown is a consolidating note');
+  assert.ok(pause, 'a tight bar under the prior high is consolidating');
   assert.equal(pause.side, 'NEUTRAL');
+  const wide = synth.slice(0, 4).concat([{
+    datetime: t + 60000, open: 4.15, high: 4.5, low: 4.0, close: 4.2, volume: 1000
+  }]);
+  assert.equal(buildNotes(wide, { vwap: 5, ema9: 4.5, ema20: 4.6 })
+    .some(note => note.text.startsWith('Consolidating near $')), false);
+  const tight = synth.slice(0, 4).concat([{
+    datetime: t + 120000, open: 4.15, high: 4.16, low: 4.14, close: 4.145, volume: 100000
+  }]);
+  assert.ok(buildNotes(tight, { vwap: 5, ema9: 4.5, ema20: 4.6 })
+    .some(note => note.text.startsWith('Consolidating near $')));
   assert.equal(quiet.filter(note => note.text === 'Below 9/20 EMA').length, 1);
   assert.equal(trafficBanner(
     { macd: true, no_hv_sell: true, no_big_red: true, no_topping_tail: true, spread_ok: true },

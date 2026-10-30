@@ -791,11 +791,14 @@
       const time = document.createElement('time');
       time.textContent = note.time || '';
       const markEl = document.createElement('span');
-      if (note.side === 'BULL') { markEl.textContent = '▲'; markEl.style.color = '#1FC08A'; }
+      if (note.caution) { markEl.textContent = '!'; markEl.style.color = '#FBBF24'; }
+      else if (note.side === 'BULL') { markEl.textContent = '▲'; markEl.style.color = '#1FC08A'; }
       else if (note.side === 'BEAR') { markEl.textContent = '▼'; markEl.style.color = '#F2495C'; }
       else { markEl.textContent = '◆'; markEl.style.color = '#60A5FA'; }
       const text = document.createElement('span');
       text.textContent = note.text || '';
+      if (note.caution) text.style.color = '#FBBF24';
+      if (note.hover) row.title = note.hover;
       row.append(time, markEl, text);
       box.append(row);
     }
@@ -1290,7 +1293,7 @@
       ['1R reached', Number.isFinite(away) && away <= 0 ? 'reached' : (Number.isFinite(away) ? `not yet · ${cents(-away).replace('−', '')} away` : '—')],
       ['Topping tail', tail ? `${tail.time}` : 'none'],
       ['Lost 9 EMA', lost ? 'lost' : 'holding'],
-      ['Ask wall · tape slowdown', 'Phase 6']
+      ['Tape', data.tape ? data.tape.text : '—']
     ];
     const box = document.getElementById('exit-rows');
     box.replaceChildren();
@@ -1303,6 +1306,10 @@
       const right = document.createElement('span');
       right.className = 'state';
       right.textContent = state;
+      if (label === 'Tape' && data.tape) {
+        right.style.color = '#FBBF24';
+        row.title = data.tape.hover || '';
+      }
       row.append(left, right);
       box.append(row);
     }

@@ -282,7 +282,7 @@ class Sidecar:
                 )
 
     def _on_tick(self, tick):
-        symbol, price, size, trade_ms, bucket, session = tick_print(tick)
+        symbol, price, size, trade_ms, bucket, session, side = tick_print(tick)
         self._bump("tick", symbol)
         if session and session not in self.logged_sessions:
             self.logged_sessions.add(str(session))
@@ -306,7 +306,8 @@ class Sidecar:
             forming = dict(builder.forming) if builder.forming else None
             rows = builder.rows() if closed is not None else None
             provisional = dict(closed) if closed is not None else None
-        self._publish_live(symbol, quote, forming, closed, rows)
+        tick_msg = {"t": trade_ms, "size": size, "side": side} if trade_ms is not None else None
+        self._publish_live(symbol, quote, forming, closed, rows, tick_msg)
         if provisional is not None:
             threading.Thread(
                 target=self._reconcile,
@@ -383,14 +384,14 @@ class Sidecar:
             json.dumps({"quote": quote, "forming": None, "closed": None}),
         )
 
-    def _publish_live(self, symbol, quote, forming, closed, rows):
+    def _publish_live(self, symbol, quote, forming, closed, rows, tick=None):
         self.redis.set(f"gk:quote:{symbol}", json.dumps(quote))
         if rows is not None:
             self.redis.set(f"gk:bars:{symbol}", json.dumps(rows))
-        self.redis.publish(
-            f"gk:live:{symbol}",
-            json.dumps({"quote": quote, "forming": forming, "closed": closed}),
-        )
+        body = {"quote": quote, "forming": forming, "closed": closed}
+        if tick:
+            body["tick"] = tick
+        self.redis.publish(f"gk:live:{symbol}", json.dumps(body))
 
     def _reconcile(self, symbol, minute_ms):
         """Refetch the last 3 closed bars in one call. Retry once if the newest is missing."""
