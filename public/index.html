@@ -67,6 +67,7 @@
     .pillar .chg.down { color: #F2495C; }
     .pillar .px { font-size: 11px; color: #C4B5FD; }
     .pillar .x { border: 0; background: transparent; color: #737373; cursor: pointer; font: inherit; }
+    .pillar { min-height: 58px; }
     .pillar-add {
       color: #A3A3A3;
       border: 1px dashed #2E2E2E;
@@ -75,7 +76,8 @@
       align-items: center;
       justify-content: center;
       border-radius: 8px;
-      min-height: 52px;
+      min-height: 58px;
+      padding: 8px 10px;
       cursor: pointer;
       font: inherit;
     }
@@ -113,7 +115,12 @@
       flex-direction: column;
       gap: 8px;
     }
-    #verdict { gap: 10px; }
+    #verdict {
+      gap: 10px;
+      border: 1px solid #262626;
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
     #verdict.aligned {
       background: rgba(31, 192, 138, 0.10);
       border-color: rgba(31, 192, 138, 0.45);
@@ -230,6 +237,7 @@
     #path .kicker { color: #FBBF24; }
     #path-text { line-height: 1.6; }
     .exit { display: flex; justify-content: space-between; }
+    #exit-rows { display: flex; flex-direction: column; gap: 7px; }
     .exit .state { color: #737373; }
     #risk .box {
       background: #111;
@@ -405,7 +413,23 @@
   let unknownSymbol = false;
   let symbolSuggestion = null;
   let activeOverlayId = null;
+  let pillarQuotes = {};
   let adding = false;
+
+  function formatRvol(n) {
+    if (!Number.isFinite(n)) return '';
+    return n >= 10 ? `${Math.round(n)}×` : `${n.toFixed(1)}×`;
+  }
+
+  function rememberQuote(name, ctx) {
+    if (!name || !ctx) return;
+    pillarQuotes[name] = {
+      price: ctx.price,
+      day_change_pct: ctx.day_change_pct,
+      rvol: ctx.rvol,
+      rvol_color: ctx.rvol_color
+    };
+  }
 
   const overlayEls = {
     waiting: document.getElementById('overlay-waiting'),
@@ -468,13 +492,32 @@
       sym.className = 'sym';
       sym.textContent = name;
       row.append(sym);
-      if (name === symbol && quote && Number.isFinite(quote.day_change_pct)) {
+      const cached = pillarQuotes[name];
+      if (cached && Number.isFinite(cached.day_change_pct)) {
         const chg = document.createElement('span');
-        const up = quote.day_change_pct >= 0;
+        const up = cached.day_change_pct >= 0;
         chg.className = 'chg ' + (up ? 'up' : 'down');
-        chg.textContent = `${up ? '+' : ''}${quote.day_change_pct.toFixed(1)}%`;
+        chg.textContent = `${up ? '+' : ''}${cached.day_change_pct.toFixed(1)}%`;
         row.append(chg);
-      } else {
+      }
+      btn.append(row);
+      const sub = document.createElement('span');
+      sub.className = 'px';
+      if (cached && Number.isFinite(cached.price)) sub.append(document.createTextNode(money(cached.price)));
+      if (cached && Number.isFinite(cached.rvol)) {
+        if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
+        const rvol = document.createElement('span');
+        rvol.textContent = formatRvol(cached.rvol);
+        rvol.style.color = cached.rvol_color || '#A3A3A3';
+        sub.append(rvol);
+      }
+      if (sub.childNodes.length) sub.append(document.createTextNode(' · '));
+      const hours = document.createElement('span');
+      hours.textContent = '—';
+      hours.style.color = '#737373';
+      sub.append(hours);
+      if (name !== symbol) {
+        sub.append(document.createTextNode(' '));
         const x = document.createElement('button');
         x.type = 'button';
         x.className = 'x';
@@ -483,15 +526,9 @@
           event.stopPropagation();
           removePillar(name);
         });
-        row.append(x);
+        sub.append(x);
       }
-      btn.append(row);
-      if (name === symbol && quote && Number.isFinite(quote.price)) {
-        const sub = document.createElement('span');
-        sub.className = 'px';
-        sub.textContent = money(quote.price);
-        btn.append(sub);
-      }
+      btn.append(sub);
       btn.addEventListener('click', () => selectSymbol(name));
       nav.append(btn);
     }
@@ -534,6 +571,7 @@
   }
 
   function removePillar(name) {
+    delete pillarQuotes[name];
     pillars = pillars.filter(item => item !== name);
     savePillars();
     if (symbol === name) selectSymbol(pillars[0] || '');
@@ -682,12 +720,13 @@
     return view;
   }
 
-  function clusterLevels(levels) {
+  function clusterLevels(levels, gap) {
+    const limit = Number.isFinite(gap) ? Math.max(EDGE, gap) : EDGE;
     const sorted = [...levels].filter(level => Number.isFinite(level.price)).sort((a, b) => b.price - a.price);
     const groups = [];
     for (const level of sorted) {
       const last = groups[groups.length - 1];
-      if (last && Math.abs(last.price - level.price) <= EDGE) last.members.push(level);
+      if (last && Math.abs(last.price - level.price) <= limit) last.members.push(level);
       else groups.push({ price: level.price, members: [level] });
     }
     return groups.map(group => {
@@ -787,7 +826,9 @@
       plot.append(green, red);
     }
     const rows = [];
-    for (const level of clusterLevels(levels)) {
+    const gap = 16 * (box.hi - box.lo) / height;
+    const sameEntry = trade && Math.abs(price - trade.entry) <= 0.01;
+    for (const level of clusterLevels(levels, gap)) {
       if (level.price > box.hi || level.price < box.lo) continue;
       const delta = cents(level.price - price);
       const line = level.dash
@@ -801,7 +842,7 @@
         level.color
       ) });
     }
-    rows.push({ y: yOf(price, box, height), el: rung(0, 'PRICE', '', '', '#60A5FA') });
+    rows.push({ y: yOf(price, box, height), el: rung(0, sameEntry ? 'PRICE = ENTRY' : 'PRICE', '', '', '#60A5FA') });
     const priceRow = rows[rows.length - 1].el;
     const pill = priceRow.querySelector('.mark');
     pill.className = 'price-pill';
@@ -816,17 +857,30 @@
         ['STOP', trade.stop, '#F2495C']
       ];
       for (const [label, level, color] of rights) {
+        if (sameEntry && label === 'ENTRY') continue;
         if (!Number.isFinite(level) || level > box.hi || level < box.lo) continue;
         rows.push({ y: yOf(level, box, height), el: rung(0, '', `<span style="display:block;height:1px;background:${color};opacity:0.7"></span>`, `${label} ${px(level)}`, color) });
       }
     }
     rows.sort((a, b) => a.y - b.y);
-    let last = -999;
+    const placed = [];
     for (const row of rows) {
-      let y = row.y;
-      if (y - last < 18) y = last + 18;
-      last = y;
-      row.el.style.top = `${y}px`;
+      const prev = placed[placed.length - 1];
+      if (prev && row.y - prev.y < 16) {
+        const prevName = prev.el.querySelector('.name');
+        const nextName = row.el.querySelector('.name');
+        if (nextName.textContent) {
+          prevName.textContent = [prevName.textContent, nextName.textContent].filter(Boolean).join(' · ');
+        }
+        const prevVal = prev.el.querySelector('.val');
+        const nextVal = row.el.querySelector('.val');
+        if (!prevVal.textContent && nextVal.textContent) prevVal.innerHTML = nextVal.innerHTML;
+        continue;
+      }
+      placed.push(row);
+    }
+    for (const row of placed) {
+      row.el.style.top = `${row.y}px`;
       plot.append(row.el);
     }
   }
@@ -871,7 +925,6 @@
       ? `${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl).toFixed(2)}`
       : '—';
 
-    const names = [];
     const ctx = data.context || {};
     const structure = [
       ['VWAP', ctx.vwap_value],
@@ -880,15 +933,31 @@
       ['20 EMA', ctx.ema20_1m_value],
       ['Support', ctx.key_level_down?.price]
     ];
-    if (Number.isFinite(plan.entry) && Number.isFinite(plan.target)) {
+    const groups = {
+      'entry and 1R': [],
+      '1R and 2R': [],
+      '2R and 3R': []
+    };
+    if (Number.isFinite(plan.entry) && Number.isFinite(plan.target) && plan.r > 0) {
       for (const [label, level] of structure) {
         if (!Number.isFinite(level) || level <= plan.entry || level >= plan.target) continue;
         const dist = (level - plan.entry) / plan.r;
         const band = dist < 1 ? 'entry and 1R' : dist < 2 ? '1R and 2R' : '2R and 3R';
-        names.push(`${label} ${px(level)} sits between ${band}`);
+        const name = label === 'VWAP' ? 'VWAP' : label.toLowerCase();
+        groups[band].push(`${name} ${px(level)}`);
       }
     }
-    document.getElementById('path-text').textContent = names.length ? names.join('. ') + '.' : 'No structure between entry and 3R.';
+    const sentences = [];
+    for (const [band, items] of Object.entries(groups)) {
+      if (!items.length) continue;
+      const list = items.length === 1
+        ? items[0]
+        : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+      sentences.push(`${list} ${items.length === 1 ? 'sits' : 'sit'} between ${band}`);
+    }
+    document.getElementById('path-text').textContent = sentences.length
+      ? sentences.join('. ') + '.'
+      : 'No structure between entry and 3R.';
 
     const oneR = Number.isFinite(plan.entry) && Number.isFinite(plan.r) ? plan.entry + plan.r : null;
     const away = Number.isFinite(oneR) && Number.isFinite(price) ? oneR - price : null;
@@ -919,6 +988,7 @@
   function renderState(data) {
     const ctx = data.context || {};
     quote = { price: ctx.price, day_change_pct: ctx.day_change_pct };
+    rememberQuote(symbol, ctx);
     document.getElementById('header-symbol').textContent = symbol;
     document.getElementById('header-price').textContent = money(ctx.price);
     const age = Number.isFinite(lastPrintAtMs) ? formatAgo(lastPrintAtMs) : (lastSuccessAt ? formatAgo(lastSuccessAt) : '');
@@ -1137,6 +1207,19 @@
     stateTimer = setInterval(pollState, STATE_POLL_MS);
   }
 
+  async function seedPillars() {
+    for (const name of pillars) {
+      if (name === symbol || pillarQuotes[name]) continue;
+      try {
+        const { data } = await fetchJson(`/api/state/${encodeURIComponent(name)}`);
+        if (data?.status === 'ok') rememberQuote(name, data.context);
+      } catch {
+        /* the tab fills when that symbol is selected */
+      }
+    }
+    renderPillars();
+  }
+
   function init() {
     pillars = loadPillars();
     const params = new URLSearchParams(location.search);
@@ -1145,8 +1228,9 @@
     }
     const querySymbol = params.get('symbol');
     if (querySymbol && !pillars.length) pillars = [querySymbol.trim().toUpperCase()];
+    const wanted = querySymbol ? querySymbol.trim().toUpperCase() : '';
     const saved = localStorage.getItem(STORAGE_KEY);
-    symbol = pillars.includes(saved) ? saved : (pillars[0] || '');
+    symbol = pillars.includes(wanted) ? wanted : (pillars.includes(saved) ? saved : (pillars[0] || ''));
     document.getElementById('header-symbol').textContent = symbol || '—';
     renderPillars();
     pollHealth();
@@ -1166,7 +1250,7 @@
     if (symbol) {
       waitingForData = true;
       updateOverlays();
-      startStatePolling();
+      seedPillars().finally(() => startStatePolling());
     } else {
       waitingForData = false;
       updateOverlays();
