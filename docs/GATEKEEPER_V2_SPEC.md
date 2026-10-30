@@ -177,19 +177,23 @@ Every transition is one line in the signal log: time, ticker, from, to, trigger,
 
 ## In-trade mode
 
-A buy fill on a watched ticker switches Gatekeeper from pre-trade to in-trade mode automatically; the position closing switches it back.
+A BUY that opens or adds to a position on any symbol switches the rail to in-trade. If that symbol is not already a pillar tab, Gatekeeper adds it and selects it. When the position goes flat, one JSON line is appended to the trade log on the data volume and the rail returns to pre-trade. There is no `?trade=1` toggle. The live fill is what turns the mode on.
 
-**Fill detection.** Subscribe to Webull order events (gRPC). On a filled BUY, read the average fill price as the entry. Positions are polled at most every 10 s as a fallback.
+**Fill detection.** The sidecar subscribes with the official SDK gRPC client (`TradeEventsClient.do_subscribe`) and handles order events and position events. Option events on that same stream are ignored. This is not a second MQTT session. Positions are polled every 10 seconds with a read of the account position list, only as a fallback when an event is missed. Fills and positions are published to Redis. The account is `WEBULL_ACCOUNT_ID` in the server environment. The cash account for that variable is `CVU7R6E8`. The id is not hardcoded in source.
 
-**Stop and R math.** Stop is the pullback low minus 1¢, capped at 20¢ below entry (MY OWN rule, from watching Ross's stops):
+**Entry.** Entry is the average fill price across partial fills and adds. Shares are the position size. Dollar P&L is `(last − average) × shares`. R P&L uses that average against the frozen R below.
+
+**Stop and R math.** The stop is frozen when the position goes from flat to long, and it does not move after that. Later adds change the average entry and the share count only. The 1R, 2R, and 3R prices stay on the right side of the ladder with the frozen stop. The formula line stays on the position card.
 
 ```latex
 \text{stop} = \max(\text{pullback\_low} - 0.01,\ \text{entry} - 0.20)
 ```
 
 ```latex
-R = \text{entry} - \text{stop}, \qquad nR = \text{entry} + n \times R
+R = \text{entry} - \text{stop}, \qquad nR = \text{frozen entry} + n \times R
 ```
+
+`pullback_low` is the setup machine's pullback low when the setup is ARMED or TRIGGERED at the fill. Otherwise it is the low of the last closed bar before the fill. The setup state and the failing Gospel checks (red chips only) are stored with the trade at that moment.
 
 Worked example, entry $5.60, pullback low $5.37:
 
@@ -201,17 +205,19 @@ Worked example, entry $5.60, pullback low $5.37:
 | R | $0.20 |  |
 | 1R / 2R / 3R | $5.80 / $6.00 / $6.20 |  |
 
-The pullback low comes from the state machine (the lowest low of the pullback candles), not only the previous candle.
+**Closing.** When the position is flat, the trade log line records symbol, entry and exit averages, shares, realized dollars, R multiple, duration, setup state at entry, and the failing Gospel checks at entry.
 
-**Risk lockouts.** These take over the whole screen and cannot be dismissed until the condition clears.
+**Risk lockouts.** These take over the whole screen and cannot be dismissed from the UI. The live price and the position stay visible underneath, dimmed. Lockout state is written to the data volume and restored after a restart.
 
 | Condition | Display | Source |
 | --- | --- | --- |
-| Last price under stop while position open | Full-screen red: STOP HIT, YOU ARE STILL IN | MY OWN |
-| Daily realized loss reaches max loss | DONE FOR THE DAY lock until next session | Ross Rule 2 |
-| Three consecutive losing trades | DONE FOR THE DAY lock until next session | Ross Rule 3 |
+| Last price below the frozen stop while a position is open | Full-screen red: STOP HIT · YOU ARE STILL IN, until flat | MY OWN |
+| Realized loss reaches `DAILY_MAX_LOSS_R` (default 3) or `DAILY_MAX_LOSS_USD` when that is set, whichever comes first | DONE FOR THE DAY until 4:00 AM ET the next session | Ross Rule 2 |
+| Three consecutive losing trades | Same overlay, same reset | Ross Rule 3 |
 
-Max loss is set in config, in dollars and in R. Realized P&L and the losing streak come from the day's Webull fills. Gatekeeper still places no orders: the stop is a real order you set in Webull.
+A loser is realized P&L below zero. A scratch, absolute P&L under 1 cent per share, neither counts as a loser nor resets the streak (MY OWN). While a position is below its stop, STOP HIT is the overlay on screen. After the position is flat, a day lock remains until 4:00 AM ET. The session row shows realized dollars, losers as `N of 3`, and the max loss still left.
+
+Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists behind `GK_INJECT_FILLS` and is refused in production, so the lockouts can be tested without a trade. Exit warnings stay Phase 6.
 
 ## Exit warnings
 
