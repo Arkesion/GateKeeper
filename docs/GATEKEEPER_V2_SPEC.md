@@ -126,7 +126,7 @@ Context dots render grey with values and never affect the verdict. The verdict r
 | MACD | ✓ MACD | ✕ MACD −0.01 | Histogram above 0 (forming bar OK). The chip is the short label; the hover says MACD histogram |
 | High-volume sell | ✓ No HV sell | ✕ HV sell 11:10 | Red bar volume above the largest green bar of the run, last 8 min |
 | Large sell candle | ✓ No big red | ✕ Big red 11:10 | Red body ≥ 2× the 10-bar median body, last 8 min |
-| Topping tail | ✓ No topping tail | ✕ Tail 09:41 | Spec tail rule; in the last 3 closed bars, cleared early if a later bar closes above the tail's high. The hover says Topping tail |
+| Topping tail | ✓ No tail | ✕ Tail 09:41 | Spec tail rule; in the last 3 closed bars, cleared early if a later bar closes above the tail's high. The hover says Topping tail |
 | Front side | ✓ Front side | ✕ Choppy | Higher highs and higher lows |
 | Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg |
 | Spread | ✓ Spread 1¢ | ✕ Spread 14¢ | ≤ 10¢ (MY OWN number) |
@@ -143,7 +143,7 @@ High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; 
 
 **Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with seven Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
 
-**Chips (revised 2026-10-30).** Seven chips, in the Gospel-set order, each on one line. A chip names the state, not the rule. MACD fails as `✕ MACD −0.01`; the hover says MACD histogram. High-volume sell and the large red candle each cite their own bar start. A topping tail fails as `✕ Tail 09:41`; the hover says Topping tail. Front side fails as `✕ Choppy`. Giveback shows the percent and spread shows the cents.
+**Chips (revised 2026-10-30).** Seven chips, in the Gospel-set order, each on one line. A chip names the state, not the rule. MACD fails as `✕ MACD −0.01`; the hover says MACD histogram. High-volume sell and the large red candle each cite their own bar start. A topping tail passes as `✓ No tail` and fails as `✕ Tail 09:41`; the hover says Topping tail. Front side fails as `✕ Choppy`. Giveback shows the percent and spread shows the cents.
 
 **Intraday pivots (unchanged detector).** A pivot high is a bar whose high is not beaten by any of the 3 bars on the left or the bars on the right. The right side is 3 bars, or fewer at the end of the series, so a fresh high can count before three later bars have printed. Pivot lows use the same window on the lows. An equal neighbor still counts; only a strictly higher high, or a strictly lower low, knocks the swing out. Swings come from today's completed 1-minute bars once at least 7 exist. A separate 48-bar pass builds 5-cent clusters with at least two touches. "Nearest" is a score, not the closest price: candidates beyond `max($0.01, 0.2% of price)` score `touches × 100` plus a half/whole-dollar bonus. Two or more touches beat a single touch. Ties go to the closer price. The most recent swing is always in that pool. The pick is labeled Premarket High, HOD, Whole Dollar, Half Dollar, or Pivot when it sits within `max($0.03, 1.2% of price)` of that kind. It is recomputed on every state refresh. Those rows stay on the ladder. They do not affect ALIGNED.
 

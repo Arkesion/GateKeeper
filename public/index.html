@@ -655,7 +655,7 @@
     const tailWhen = fs.topping_tail_time ? ' ' + fs.topping_tail_time : '';
     const tailFail = fs.no_topping_tail === false
       ? `✕ Tail${tailWhen}`
-      : `${mark(fs.no_topping_tail)}No topping tail`;
+      : `${mark(fs.no_topping_tail)}No tail`;
     const macdHint = hints.macd || 'Histogram above 0 (MACD line above its signal line).';
     const tailHint = hints.no_topping_tail || 'Topping tail in the last 3 closed bars, cleared if a later bar closes above its high.';
     const items = [
@@ -669,7 +669,7 @@
       chip(
         tailFail,
         toneOf(fs.no_topping_tail),
-        fs.no_topping_tail === false ? `Topping tail${tailWhen}. ${tailHint}` : tailHint
+        fs.no_topping_tail === false ? `Topping tail${tailWhen}. ${tailHint}` : `No topping tail. ${tailHint}`
       ),
       chip(
         front?.state === 'red' ? '✕ Choppy' : `${front?.state === 'yellow' ? '! ' : '✓ '}Front side`,
