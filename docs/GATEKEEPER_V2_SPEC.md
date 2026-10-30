@@ -108,8 +108,8 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 | Row | Dot | Source |
 | --- | --- | --- |
 | Gospel | MACD positive | Histogram above 0 (MACD line above its signal line). Ross's videos, per Kevin; citation to add |
-| Gospel | No high-volume sell | Red bar volume above the buying (green) bars' volume, or a large red candle. Ross's videos, per Kevin; final bars only |
-| Gospel | Resistance | Daily chart only: no prior-day high or major daily level within N% above price (PDF criterion 2). N starts at 10% (`dailyResistancePct`). Candidates are the highs of completed daily bars before today, the same daily cache used for RVOL. The nearest high above price fails the check inside that band. Pass `✓ Daily clear`. Fail `✕ Daily res. 3.65 +13%`. Missing daily bars do not fail. Intraday pivots and half/whole dollars are ladder levels and Phase 3 break triggers, never a failing check (Ross buys the break of them) |
+| Gospel | No high-volume sell | Split (2026-10-30): volume and large-candle are two checks. See the Gospel set below |
+| Gospel | Resistance | MOVED (2026-10-30): daily-chart resistance is a stock-selection fact (PDF criterion 2), shown with the pillar data, never in the verdict. Intraday pivots and half/whole dollars are ladder levels and Phase 3 break triggers |
 | Gospel | Front side | Web page: higher highs and higher lows, early in the breakout |
 | Gospel | Giveback | Web page: shallow pullback; pitfall, too deep |
 | Gospel | Spread ≤ 10¢ | Web page pitfall: wide spreads; 10¢ is MY OWN |
@@ -119,6 +119,20 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 
 Context dots render grey with values and never affect the verdict. The verdict reads ALIGNED or NOT ALIGNED and lists only failing Gospel checks. Every dot's hover names its source.
 
+**Gospel set (revised 2026-10-30, supersedes the rows above).** Seven alignment checks, all from final bars unless noted:
+
+| Check | Pass label | Fail label | Rule |
+| --- | --- | --- | --- |
+| MACD | ✓ MACD | ✕ MACD hist −0.01 | Histogram above 0 (forming bar OK) |
+| High-volume sell | ✓ No HV sell | ✕ HV sell 11:10 | Red bar volume above the largest green bar of the run, last 8 min |
+| Large sell candle | ✓ No big red | ✕ Big red 11:10 | Red body ≥ 2× the 10-bar median body, last 8 min |
+| Topping tail | ✓ No topping tail | ✕ Topping tail 09:41 | Spec tail rule; in the last 3 closed bars, cleared early if a later bar closes above the tail's high |
+| Front side | ✓ Front side | ✕ Choppy | Higher highs and higher lows |
+| Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg |
+| Spread | ✓ Spread 1¢ | ✕ Spread 14¢ | ≤ 10¢ (MY OWN number) |
+
+High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; citations to add. Daily-chart resistance shows in the ticker header and on the pillar tab, muted, amber when the nearest prior high is within 10%. Example: `Daily res. 3.54 · +3%`. It does not change ALIGNED.
+
 **Notes rules (revised 2026-10-30).**
 
 - Every note is BEAR, NEUTRAL or BULL, never two at once for the same bar.
@@ -127,9 +141,9 @@ Context dots render grey with values and never affect the verdict. The verdict r
 - Topping and bottoming tails need a meaningful bar: wick at least 50% of the bar's range, and the range at least 1.5× the median range of the last 10 bars. A topping tail's high is within 2% of the highest high of the last 15 bars; a bottoming tail's low is within 2% of the lowest low of those bars. A doji is not a tail.
 - One line per event, latest occurrence only, newest first.
 
-**Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with six Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
+**Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with seven Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
 
-**Chips (revised 2026-10-30).** A chip names the state, not the rule. Every failing chip carries its reason or level. MACD fails as `✕ MACD down`. No high-volume sell passes as `✓ No HV sell` and fails as `✕ HV sell 11:11`, the start time of the latest red bar that tripped the check. Front side, giveback, and spread put the short reason, the giveback percent, or the spread in cents on the fail.
+**Chips (revised 2026-10-30).** Seven chips, in the Gospel-set order. A chip names the state, not the rule. MACD fails with the histogram (`✕ MACD hist −0.01`). High-volume sell and the large red candle each cite their own bar start. A topping tail in the last 3 closed bars fails until a later close is above that high. Front side fails as `✕ Choppy`. Giveback shows the percent and spread shows the cents.
 
 **Intraday pivots (unchanged detector).** A pivot high is a bar whose high is not beaten by any of the 3 bars on the left or the bars on the right. The right side is 3 bars, or fewer at the end of the series, so a fresh high can count before three later bars have printed. Pivot lows use the same window on the lows. An equal neighbor still counts; only a strictly higher high, or a strictly lower low, knocks the swing out. Swings come from today's completed 1-minute bars once at least 7 exist. A separate 48-bar pass builds 5-cent clusters with at least two touches. "Nearest" is a score, not the closest price: candidates beyond `max($0.01, 0.2% of price)` score `touches × 100` plus a half/whole-dollar bonus. Two or more touches beat a single touch. Ties go to the closer price. The most recent swing is always in that pool. The pick is labeled Premarket High, HOD, Whole Dollar, Half Dollar, or Pivot when it sits within `max($0.03, 1.2% of price)` of that kind. It is recomputed on every state refresh. Those rows stay on the ladder. They do not affect ALIGNED.
 
