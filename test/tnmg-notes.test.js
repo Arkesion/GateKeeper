@@ -15,7 +15,9 @@ const {
   macdGospelPositive,
   buildNotes,
   relativeVolume,
-  rvolColor
+  rvolColor,
+  computeResistanceSignal,
+  computeFrontSideSignal
 } = require('../lib/signals');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -137,6 +139,31 @@ test('RVOL uses the prior 10 completed days and not today', () => {
   assert.equal(rvolColor(20), '#1FC08A');
   assert.equal(rvolColor(20.1), '#C4B5FD');
   assert.equal(relativeVolume([], session, now), null);
+});
+
+test('daily resistance fails only when the nearest prior high is within 10%', () => {
+  const now = Date.parse('2026-10-30T15:14:00Z');
+  const yesterday = Date.parse('2026-10-29T04:00:00Z');
+  const today = Date.parse('2026-10-30T04:00:00Z');
+  const bar = (datetime, high) => ({ datetime, high, low: 1, open: 1, close: 1, volume: 1 });
+  const far = computeResistanceSignal(3.23, [bar(yesterday, 3.65)], now);
+  assert.equal(far.state, 'green');
+  assert.equal(far.distance_pct, 13);
+  const near = computeResistanceSignal(3.23, [bar(yesterday, 3.50)], now);
+  assert.equal(near.state, 'red');
+  assert.equal(near.level_price, 3.5);
+  assert.equal(near.reason, 'Daily res. 3.50 +8%');
+  const ignored = computeResistanceSignal(3.23, [bar(yesterday, 4), bar(today, 3.30)], now);
+  assert.equal(ignored.state, 'green');
+  assert.equal(ignored.level_price, 4);
+  assert.equal(computeResistanceSignal(3.23, [], now).phase, 'no_daily_data');
+  const front = computeFrontSideSignal(
+    [{ datetime: now, open: 3.3, high: 3.4, low: 3.2, close: 3.35, volume: 1 }],
+    3.1,
+    3.2,
+    3.15
+  );
+  assert.notEqual(front.phase, 'below_ema9');
 });
 
 test('VWAP anchor sweep at 09:56 is reported and does not change the formula', () => {

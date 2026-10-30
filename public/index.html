@@ -162,6 +162,7 @@
       padding: 4px 0;
       border: 1px dashed #2E2E2E;
       border-radius: 5px;
+      white-space: pre-line;
     }
     #plot { position: relative; flex: 1; min-height: 240px; }
     #spine {
@@ -627,19 +628,19 @@
     const front = data.momentum?.front_side;
     const gb = data.giveback;
     const spread = data.context?.bid_ask_spread;
-    const resCents = Number.isFinite(res?.level_price) && Number.isFinite(data.context?.price)
-      ? cents(res.level_price - data.context.price) : '';
     const hints = data.context?.calc_hints?.dots || {};
+    const hvFail = fs.no_hv_sell === false
+      ? `✕ HV sell${fs.hv_sell_time ? ' ' + fs.hv_sell_time : ''}`
+      : `${mark(fs.no_hv_sell)}No HV sell`;
+    const dailyFail = res?.state === 'red' && Number.isFinite(res.level_price)
+      ? `✕ Daily res. ${px(res.level_price)} +${res.distance_pct}%`
+      : '✓ Daily clear';
     const items = [
-      chip(`${mark(fs.macd)}MACD`, toneOf(fs.macd), hints.macd || 'Histogram above 0 (MACD line above its signal line).'),
-      chip(`${mark(fs.no_hv_sell)}No HV sell`, toneOf(fs.no_hv_sell), hints.no_hv_sell),
+      chip(fs.macd === false ? '✕ MACD down' : `${mark(fs.macd)}MACD`, toneOf(fs.macd), hints.macd || 'Histogram above 0 (MACD line above its signal line).'),
+      chip(hvFail, toneOf(fs.no_hv_sell), hints.no_hv_sell),
+      chip(dailyFail, toneOf(res?.state === 'red' ? 'red' : 'green'), res?.reason || hints.resistance),
       chip(
-        `${res?.state === 'green' ? '✓ ' : res?.state === 'yellow' ? '! ' : '✕ '}Res.${resCents && res.level_price > data.context.price ? ' ' + resCents + ' up' : ''}`,
-        toneOf(res?.state),
-        res?.reason
-      ),
-      chip(
-        `${front?.state === 'green' ? '✓ ' : front?.state === 'yellow' ? '! ' : '✕ '}Front side`,
+        front?.state === 'red' ? `✕ ${front.reason || 'Front side'}` : `${front?.state === 'yellow' ? '! ' : '✓ '}Front side`,
         toneOf(front?.state),
         front?.reason
       ),
@@ -649,7 +650,9 @@
         gb?.reason
       ),
       chip(
-        `${mark(fs.spread_ok)}Spread${Number.isFinite(spread) ? ' ' + Math.round(spread * 100) + '¢' : ''}`,
+        fs.spread_ok === false
+          ? `✕ Spread${Number.isFinite(spread) ? ' ' + Math.round(spread * 100) + '¢' : ''}`
+          : `${mark(fs.spread_ok)}Spread${Number.isFinite(spread) ? ' ' + Math.round(spread * 100) + '¢' : ''}`,
         toneOf(fs.spread_ok),
         hints.spread_ok
       )
@@ -675,19 +678,12 @@
     return 1;
   }
 
-  function renderSetup(front) {
-    const phase = front?.phase || '';
-    const title = document.getElementById('setup-title');
-    title.textContent = phase === 'no_impulse' || !phase ? 'IDLE' : String(phase).replace(/_/g, ' ').toUpperCase();
+  function renderSetup() {
+    document.getElementById('setup-title').textContent = 'IDLE';
     const bar = document.getElementById('setup-bar');
     bar.replaceChildren();
-    const lit = setupSegments(phase);
-    for (let i = 0; i < 5; i++) {
-      const seg = document.createElement('span');
-      if (i < lit) seg.className = 'on';
-      bar.append(seg);
-    }
-    document.getElementById('setup-reason').textContent = front?.reason || '';
+    for (let i = 0; i < 5; i++) bar.append(document.createElement('span'));
+    document.getElementById('setup-reason').textContent = '';
   }
 
   function renderNotes(notes) {
@@ -740,8 +736,14 @@
       } else if (roles.has('ema9') && roles.has('ema20') && !roles.has('support')) {
         name = '9 & 20 EMA';
       }
-      const color = roles.has('resistance') ? '#F2495C' : (roles.size === 1 && roles.has('vwap') ? '#FB923C' : '#1FC08A');
-      return { price, name, color, dash: roles.size === 1 && roles.has('vwap'), role: [...roles][0] };
+      let color = '#A3A3A3';
+      if (roles.has('resistance')) color = '#F2495C';
+      else if (roles.has('support')) color = '#1FC08A';
+      else if (roles.size === 1 && roles.has('vwap')) color = '#FB923C';
+      else if (roles.has('ema9')) color = '#22D3EE';
+      else if (roles.has('ema20')) color = '#E879F9';
+      else if (roles.has('psych')) color = '#525252';
+      return { price, name, color, dash: roles.size === 1 && roles.has('vwap'), roles: [...roles] };
     });
   }
 
@@ -792,19 +794,34 @@
     if (Number.isFinite(down?.price)) {
       levels.push({ price: down.price, name: 'Support' + (down.kind_label ? ' · ' + down.kind_label : ''), role: 'support' });
     }
+    if (box) {
+      let dollar = Math.ceil(box.lo * 2 - 1e-9) / 2;
+      for (; dollar <= box.hi + 1e-9; dollar = Math.round((dollar + 0.5) * 100) / 100) {
+        const level = Math.round(dollar * 100) / 100;
+        levels.push({ price: level, name: '$' + level.toFixed(2), role: 'psych' });
+      }
+    }
     const highEdge = document.getElementById('edge-high');
     const lowEdge = document.getElementById('edge-low');
-    highEdge.hidden = true;
-    lowEdge.hidden = true;
+    const highLines = [];
+    const lowLines = [];
     if (box && Number.isFinite(ctx.session_high) && ctx.session_high > box.hi) {
-      highEdge.hidden = false;
-      highEdge.textContent = `↑ High of day ${money(ctx.session_high)} · ${cents(ctx.session_high - price)}`;
+      highLines.push(`↑ High of day ${money(ctx.session_high)} · ${cents(ctx.session_high - price)}`);
+    }
+    if (box && Number.isFinite(ctx.vwap_value) && ctx.vwap_value > box.hi) {
+      highLines.push(`VWAP ${px(ctx.vwap_value)} · ${cents(ctx.vwap_value - price)}`);
+    }
+    if (box && Number.isFinite(ctx.vwap_value) && ctx.vwap_value < box.lo) {
+      lowLines.push(`VWAP ${px(ctx.vwap_value)} · ${cents(ctx.vwap_value - price)}`);
     }
     const pullback = data.giveback?.pullback_low;
     if (box && Number.isFinite(pullback) && pullback < box.lo) {
-      lowEdge.hidden = false;
-      lowEdge.textContent = `↓ Pullback low ${money(pullback)} · ${cents(pullback - price)}`;
+      lowLines.push(`↓ Pullback low ${money(pullback)} · ${cents(pullback - price)}`);
     }
+    highEdge.hidden = highLines.length === 0;
+    lowEdge.hidden = lowLines.length === 0;
+    highEdge.textContent = highLines.join('\n');
+    lowEdge.textContent = lowLines.join('\n');
     const spine = document.createElement('div');
     spine.id = 'spine';
     plot.replaceChildren(spine);
@@ -828,21 +845,31 @@
     const rows = [];
     const gap = 16 * (box.hi - box.lo) / height;
     const sameEntry = trade && Math.abs(price - trade.entry) <= 0.01;
-    for (const level of clusterLevels(levels, gap)) {
+    const beside = [];
+    const apart = [];
+    for (const level of levels) {
+      if (Math.abs(level.price - price) <= EDGE) beside.push(level.name);
+      else apart.push(level);
+    }
+    const pivotHover = 'Intraday pivot: 3 bars each side, fewer on the right at the end of the series. Scored by touches, not the closest price. Not a Gospel check.';
+    for (const level of clusterLevels(apart, gap)) {
       if (level.price > box.hi || level.price < box.lo) continue;
       const delta = cents(level.price - price);
       const line = level.dash
         ? '<span style="display:block;border-top:1px dashed #FB923C"></span>'
-        : `<span style="display:block;height:2px;background:${level.color}"></span>`;
-      rows.push({ y: yOf(level.price, box, height), el: rung(
+        : `<span style="display:block;height:${level.roles.includes('psych') && level.roles.length === 1 ? 1 : 2}px;background:${level.color}"></span>`;
+      const el = rung(
         0,
         level.name,
         line,
         `${px(level.price)} <span class="dim">${delta}</span>`,
         level.color
-      ) });
+      );
+      if (level.roles.includes('resistance') || level.roles.includes('support')) el.title = pivotHover;
+      rows.push({ y: yOf(level.price, box, height), el });
     }
-    rows.push({ y: yOf(price, box, height), el: rung(0, sameEntry ? 'PRICE = ENTRY' : 'PRICE', '', '', '#60A5FA') });
+    const priceName = [sameEntry ? 'PRICE = ENTRY' : 'PRICE', ...beside].join(' · ');
+    rows.push({ y: yOf(price, box, height), el: rung(0, priceName, '', '', '#60A5FA'), price: true });
     const priceRow = rows[rows.length - 1].el;
     const pill = priceRow.querySelector('.mark');
     pill.className = 'price-pill';
@@ -866,7 +893,7 @@
     const placed = [];
     for (const row of rows) {
       const prev = placed[placed.length - 1];
-      if (prev && row.y - prev.y < 16) {
+      if (prev && row.y - prev.y < 16 && !prev.price && !row.price) {
         const prevName = prev.el.querySelector('.name');
         const nextName = row.el.querySelector('.name');
         if (nextName.textContent) {
