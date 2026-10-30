@@ -136,7 +136,7 @@ High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; 
 **Notes rules (revised 2026-10-30).**
 
 - Every note is BEAR, NEUTRAL or BULL, never two at once for the same bar.
-- Tape slowdown is NEUTRAL ("consolidation"), not bearish or bullish.
+- Consolidating is NEUTRAL. It is a closed bar whose range is at most half the median range of the prior bars, up to 10, and whose high is not a new high. It does not read volume. The live tape warning is a separate caution.
 - Price below VWAP is a BEAR note, never a verdict check.
 - Topping and bottoming tails need a meaningful bar: wick at least 50% of the bar's range, and the range at least 1.5× the median range of the last 10 bars. A topping tail's high is within 2% of the highest high of the last 15 bars; a bottoming tail's low is within 2% of the lowest low of those bars. A doji is not a tail.
 - One line per event, latest occurrence only, newest first.
@@ -217,30 +217,25 @@ Worked example, entry $5.60, pullback low $5.37:
 
 A loser is realized P&L below zero. A scratch, absolute P&L under 1 cent per share, neither counts as a loser nor resets the streak (MY OWN). While a position is below its stop, STOP HIT is the overlay on screen. After the position is flat, a day lock remains until 4:00 AM ET. The session row shows realized dollars, losers as `N of 3`, and the max loss still left. After a restart, each closed trade takes its R from the log line with the same order ids. A trade with no log match, taken while Gatekeeper was down, uses `DEFAULT_R_PER_SHARE` (default $0.10) and the session row says `R estimated`.
 
-Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists only when `GK_INJECT_FILLS=1` and `NODE_ENV` is exactly `development`. An unset `NODE_ENV` refuses it. Corpus sets `NODE_ENV=production`. The injector exists so the lockouts can be tested without a trade. Exit warnings stay Phase 6.
+Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists only when `GK_INJECT_FILLS=1` and `NODE_ENV` is exactly `development`. An unset `NODE_ENV` refuses it. Corpus sets `NODE_ENV=production`. The injector exists so the lockouts can be tested without a trade. The exit warning in this phase is tape slowdown.
 
 ## Exit warnings
 
-In-trade mode adds exit warnings built from Level 2 and the tape. Like the dots, they flag stacking evidence; the exit decision stays yours.
+Tape slowdown is the only Phase 6 warning. The ask wall is dropped: Nasdaq Basic has no depth, and the order book stays on Webull. The warning is an amber caution. It does not change ALIGNED. The exit decision stays yours.
 
 | Warning | Rule | Ross source |
 | --- | --- | --- |
-| Ask wall | Ask size at one level within 5¢ above price exceeds N× the median ask size | Gap and Go exit 1: heavy L2 resistance |
-| Tape slowdown | Trailing 15-s print rate and buy volume fall X% below the surge peak | Gap and Go exit 2: buying slowdown on L2 and T&S |
+| Tape slowdown | After a surge, the trailing 15-s Nasdaq print rate and buy-side size are both under `tapeSlowdownRatio` (40%) of that surge leg's peak 15 s. The line reads `! Tape at 35% of peak`, using the print-rate percent. The hover says prints per second and buy volume over the last 15 s versus the surge peak, measured on Nasdaq prints only. | Gap and Go exit 2: buying slowdown on T&S |
 | First red 5-min | First red 5-min candle after entry | Gap and Go exit 3 |
 | Topping tail | 1-min upper wick over 2× body near highs | v1 bearish note |
 | Lost 9 EMA | 1-min close under the 9 EMA | v1 bearish note |
 | 1R reached | Price touches 1R | MY OWN: Ross sells most into the first target |
 
-N and X start as placeholders. Every warning is logged with its timestamp, ticker and price, so thresholds can be calibrated against journaled trades later.
+Each time the tape warning turns on, or its rounded percent changes, the signal log gets prints per second, the buy ratio against the peak buy size, and the peak. Thresholds can be calibrated against journaled trades later.
 
-**Tape buffer.** Each ticker in the pillar table keeps a rolling 20-minute buffer of trades in memory, trimmed by time, plus the live L2 book.
+**Tape buffer.** The symbol on the stream keeps a rolling 20-minute ring of prints in memory, trimmed by time. Prints arrive on the existing live message. There is no second stream and no depth book.
 
-- All 3 pillar tickers stream continuously, so switching the display between them is instant.
-- A ticker added to the table backfills its last 20 minutes of trades over HTTP (Tick endpoint), then hands off to the stream. A server restart does the same.
-- L2 has no history; the book builds from the moment of subscription.
-- Nothing raw is written to disk. When a warning fires, one line of the derived features behind it (prints per second, buy-volume ratio, largest ask vs. median) goes to the signal log.
-- On exit from a trade, the buffer from entry to exit is saved to disk for calibration. That's KB to low MB per day, on corpus.
+- Nothing raw is written to disk. When the tape warning fires, one line of prints per second, buy ratio, and the peak goes to the signal log.
 
 ## Testing
 
@@ -276,7 +271,7 @@ Measured on live data, 2026-10-28 and 29. These override earlier assumptions in 
 
 - **HTTP bars are consolidated.** The BRAI 9:15 bar matched the Webull chart exactly, volume included. Closed bars are final and trustworthy.
 - **Live ticks are Nasdaq-only** (Nasdaq Basic). Tick-built OHLC matches HTTP within sub-penny; tick volume runs about 60–70% of consolidated.
-- **Forming-bar rule.** Price-based checks may read the forming bar. Volume-based checks (high-volume sell, 5-min volume, tape slowdown, RVOL) read final bars only.
+- **Forming-bar rule.** Price-based checks may read the forming bar. Volume-based checks (high-volume sell, 5-min volume, the 1-minute tape-pause note, RVOL) read final bars only. The Phase 6 tape warning reads the live Nasdaq tick stream, not those bars.
 - **One streaming session per account.** A new session takes the stream (notice type 1002). The sidecar never auto-reconnects on 1002; scripts refuse to run while Gatekeeper streams unless forced.
 - **Three distinct failure states.** DATA STALE (sidecar heartbeat over 3 s), GATEKEEPER UNREACHABLE (browser can't reach the app for 3 s), STREAM TAKEN. The first two dim the last values with "last update Xs ago"; a quiet ticker is not stale and shows "last print Xs ago".
 - **Tick messages carry no sale-condition codes**, but do carry a buy/sell `side` field, which Phase 6 can use for buy-volume ratio.
@@ -284,7 +279,7 @@ Measured on live data, 2026-10-28 and 29. These override earlier assumptions in 
 
 ## Build phases
 
-Six phases, in order. Phases 1–4 need only Webull; phase 5 waits on outside data sources, so it comes late despite sitting at the top of the screen.
+Phases 1–4 and 6 need only Webull. Phase 5 is dropped.
 
 1. **Data layer.** Webull provider behind a `MarketDataProvider` interface: backfill bars, stream L1, build 1-min bars live.
    - Done when: BRAI fixture bars match the Webull chart candle for candle, and the lock test result is documented.
@@ -294,9 +289,8 @@ Six phases, in order. Phases 1–4 need only Webull; phase 5 waits on outside da
    - Done when: fixture replay produces the expected states, and two live sessions show correct states on review.
 4. **In-trade mode and lockouts.** Fill detection, stop/R ladder, stop-breach screen, daily max loss and three-loser locks.
    - Done when: a 1-share live trade switches modes automatically, and each lockout fires in a simulated test.
-5. **Pillar table.** Float, country and news sources; Ollama sentiment with keyword override; color bands.
-   - Done when: 3 tickers populate within 10 s, and the keyword override labels a sample offering headline Bad.
-6. **Exit warnings.** L2 ask wall, tape slowdown, and remaining warnings, all logged.
-   - Done when: Switching between pillar tickers is instant, a newly added ticker backfills 20 minutes of trades, and warnings fire on a saved per-trade recording and appear in the signal log.
+5. **Pillar table.** Dropped. ChartsWatcher stays the scanner. Tickers are entered by hand.
+6. **Tape slowdown.** Trailing 15 s of Nasdaq prints and buy-side size versus the current surge leg's peak. Amber caution, logged. The ask wall is not in this phase.
+   - Done when: a synthetic tick stream warns only when both measures are under 40% of the surge peak, and the signal log records the features.
 
 Workflow stays the same: edit on cetus in Cursor, push to GitHub, deploy to corpus with deploy.sh, never edit on corpus.
