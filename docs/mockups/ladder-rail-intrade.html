@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- Gatekeeper v2 mockup (reference only, sample data). Static layout spec: match colors, sizes, spacing. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ladder rail in trade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&amp;family=JetBrains+Mono:wght@400;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#000000}
+</style>
+</head>
+<body>
+<div style="width: 600px; height: 1080px; box-sizing: border-box; padding: 16px 18px; background: #000000; color: #EDEDED; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; display: flex; flex-direction: column; gap: 12px">
+
+<header style="display: flex; justify-content: space-between; align-items: center">
+<span style="display: flex; align-items: baseline; gap: 12px"><h1 style="margin: 0; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 38px; letter-spacing: 0.06em; line-height: 1">TNMG</h1><span style="font-size: 22px; font-weight: 700">$4.21</span></span>
+<span style="text-align: right; font-size: 11px; color: #A3A3A3; line-height: 1.6"><span style="color: #1FC08A">LIVE · 1s</span><br>10:06:12</span>
+</header>
+
+<section aria-label="Position" style="border-radius: 10px; border: 1px solid #60A5FA; background: rgba(96,165,250,0.08); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<span style="font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 30px; letter-spacing: 0.06em; color: #60A5FA; line-height: 1">IN TRADE</span>
+<span style="font-size: 16px; font-weight: 700; color: #1FC08A">+$0.01 · +0.25R</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+<div style="background: #0A0A0A; border-radius: 6px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">ENTRY · 1 sh</div><div style="font-size: 18px; font-weight: 700">4.20</div></div>
+<div style="background: #0A0A0A; border-radius: 6px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">STOP</div><div style="font-size: 18px; font-weight: 700; color: #F2495C">4.16</div></div>
+<div style="background: #0A0A0A; border-radius: 6px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">R</div><div style="font-size: 18px; font-weight: 700">0.04</div></div>
+</div>
+<span style="font-size: 11px; color: #A3A3A3">stop = max(pullback low 4.17 − 1¢, entry − 20¢) · sample position</span>
+</section>
+
+<section aria-label="Price ladder" style="background: #111111; border: 1px solid #262626; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between; font-size: 11px; color: #A3A3A3"><span style="letter-spacing: 0.18em">LADDER</span><span>structure left · your levels right</span></div>
+<div style="position: relative; height: 360px">
+<div style="position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #262626"></div>
+<div style="position: absolute; left: calc(50% - 3px); top: 234px; height: 72px; width: 8px; border-radius: 4px; background: rgba(242,73,92,0.35)"></div>
+<div style="position: absolute; left: calc(50% - 3px); top: 18px; height: 216px; width: 8px; border-radius: 4px; background: rgba(31,192,138,0.30)"></div>
+
+<div style="position: absolute; left: 0; right: 0; top: 8px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%"></span><span style="flex: 1; height: 1px; background: #1FC08A; opacity: 0.6"></span><span style="width: 34%; color: #1FC08A">3R 4.32</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 44px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%; text-align: right; color: #F2495C">Resistance · pivot</span><span style="flex: 1; height: 2px; background: #F2495C"></span><span style="width: 34%; color: #F2495C">4.30</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 80px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%"></span><span style="flex: 1; height: 1px; background: #1FC08A; opacity: 0.6"></span><span style="width: 34%; color: #1FC08A">2R 4.28</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 116px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%; text-align: right; color: #A3A3A3">VWAP</span><span style="flex: 1; height: 1px; border-top: 1px dashed #FB923C"></span><span style="width: 34%; color: #FB923C">4.26</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 152px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%"></span><span style="flex: 1; height: 1px; background: #1FC08A"></span><span style="width: 34%; color: #1FC08A; font-weight: 700">1R 4.24</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 206px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%; text-align: right; font-weight: 700; color: #60A5FA">PRICE</span><span style="flex: 1; padding: 2px 0; text-align: center; border-radius: 5px; background: #60A5FA; color: #000000; font-weight: 700">4.21</span><span style="width: 34%"></span></div>
+<div style="position: absolute; left: 0; right: 0; top: 224px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%"></span><span style="flex: 1; height: 1px; background: #EDEDED; opacity: 0.5"></span><span style="width: 34%; color: #EDEDED">ENTRY 4.20</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 260px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%; text-align: right; color: #A3A3A3">9 &amp; 20 EMA · support</span><span style="flex: 1; height: 1px; background: #8C8C8C"></span><span style="width: 34%; color: #A3A3A3">4.18</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 296px; height: 20px; display: flex; align-items: center; gap: 8px"><span style="width: 40%"></span><span style="flex: 1; height: 2px; background: #F2495C"></span><span style="width: 34%; color: #F2495C; font-weight: 700">STOP 4.16</span></div>
+</div>
+</section>
+
+<section aria-label="In the path" style="border-radius: 10px; border: 1px solid rgba(251,191,36,0.45); background: rgba(251,191,36,0.08); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 11px; letter-spacing: 0.18em; color: #FBBF24">IN YOUR PATH</span>
+<span style="line-height: 1.6">VWAP 4.26 sits between 1R and 2R. Resistance 4.30 sits before 3R.</span>
+</section>
+
+<section aria-label="Exit warnings" style="background: #111111; border: 1px solid #262626; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px">
+<span style="font-size: 11px; letter-spacing: 0.18em; color: #A3A3A3">EXIT WARNINGS</span>
+<div style="display: flex; justify-content: space-between"><span style="color: #A3A3A3">1R reached</span><span style="color: #737373">not yet · 3¢ away</span></div>
+<div style="display: flex; justify-content: space-between"><span style="color: #A3A3A3">Topping tail</span><span style="color: #737373">none</span></div>
+<div style="display: flex; justify-content: space-between"><span style="color: #A3A3A3">Lost 9 EMA</span><span style="color: #737373">holding</span></div>
+<div style="display: flex; justify-content: space-between"><span style="color: #A3A3A3">Ask wall · tape slowdown</span><span style="color: #737373">Phase 6</span></div>
+</section>
+
+<section aria-label="Session risk" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+<div style="background: #111111; border: 1px solid #262626; border-radius: 8px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">REALIZED</div><div style="font-weight: 700">[$ P&amp;L]</div></div>
+<div style="background: #111111; border: 1px solid #262626; border-radius: 8px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">LOSERS</div><div style="font-weight: 700">0 of 3</div></div>
+<div style="background: #111111; border: 1px solid #262626; border-radius: 8px; padding: 8px 10px"><div style="font-size: 11px; color: #A3A3A3">MAX LOSS LEFT</div><div style="font-weight: 700">[$ limit]</div></div>
+</section>
+
+</div>
+</body>
+</html>

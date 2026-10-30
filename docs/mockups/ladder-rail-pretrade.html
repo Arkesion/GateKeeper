@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Gatekeeper v2 mockup (reference only, sample data). Static layout spec: match colors, sizes, spacing. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ladder rail pre-trade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&amp;family=JetBrains+Mono:wght@400;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#000000}
+</style>
+</head>
+<body>
+<div style="width: 600px; height: 1080px; box-sizing: border-box; padding: 16px 18px; background: #000000; color: #EDEDED; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; display: flex; flex-direction: column; gap: 12px">
+
+<nav aria-label="Pillar stocks" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+<a href="#" style="text-decoration: none; color: #EDEDED; padding: 8px 10px; border-radius: 8px; background: #1C1C1C; border: 1px solid #60A5FA; display: flex; flex-direction: column; gap: 3px">
+<span style="display: flex; justify-content: space-between"><span style="font-weight: 700">TNMG</span><span style="color: #1FC08A">+38.0%</span></span>
+<span style="font-size: 11px"><span style="color: #C4B5FD">$4.21</span> <span style="color: #A3A3A3">·</span> <span style="color: #C4B5FD">31×</span> <span style="color: #A3A3A3">·</span> <span style="color: #1FC08A">1.3h</span></span>
+</a>
+<a href="#" style="text-decoration: none; color: #EDEDED; padding: 8px 10px; border-radius: 8px; background: #111111; border: 1px solid #262626; display: flex; flex-direction: column; gap: 3px">
+<span style="display: flex; justify-content: space-between"><span style="font-weight: 700">BRAI</span><span style="color: #1FC08A">+44.1%</span></span>
+<span style="font-size: 11px"><span style="color: #C4B5FD">$4.79</span> <span style="color: #A3A3A3">·</span> <span style="color: #1FC08A">12×</span> <span style="color: #A3A3A3">·</span> <span style="color: #FBBF24">5.5h</span></span>
+</a>
+<a href="#" style="text-decoration: none; color: #A3A3A3; padding: 8px 10px; border-radius: 8px; border: 1px dashed #2E2E2E; display: flex; align-items: center; justify-content: center">+ add ticker</a>
+</nav>
+
+<header style="display: flex; justify-content: space-between; align-items: center">
+<span style="display: flex; align-items: baseline; gap: 12px"><h1 style="margin: 0; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 38px; letter-spacing: 0.06em; line-height: 1">TNMG</h1><span style="font-size: 22px; font-weight: 700">$4.21</span></span>
+<span style="text-align: right; font-size: 11px; color: #A3A3A3; line-height: 1.6"><span style="color: #1FC08A">LIVE · 3s</span><br>10:05:45</span>
+</header>
+
+<section aria-label="Alignment" style="border-radius: 10px; background: rgba(242,73,92,0.10); border: 1px solid rgba(242,73,92,0.45); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<span style="font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 30px; letter-spacing: 0.06em; color: #F2495C; line-height: 1">NOT ALIGNED</span>
+<span style="font-size: 12px; color: #F2495C">2 of 6 failing</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; font-size: 12px">
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(31,192,138,0.14); color: #1FC08A">✓ MACD</span>
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(31,192,138,0.14); color: #1FC08A">✓ No HV sell</span>
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(242,73,92,0.16); color: #F2495C">✕ Res. 9¢ up</span>
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(242,73,92,0.16); color: #F2495C">✕ Front side</span>
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(251,191,36,0.14); color: #FBBF24">! Giveback 50%</span>
+<span style="padding: 5px 8px; border-radius: 5px; background: rgba(31,192,138,0.14); color: #1FC08A">✓ Spread 1¢</span>
+</div>
+</section>
+
+<section aria-label="Price ladder" style="background: #111111; border: 1px solid #262626; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between; font-size: 11px; color: #A3A3A3"><span style="letter-spacing: 0.18em">LADDER</span><span>$4.10 – $4.34 · auto-zoom</span></div>
+<div style="text-align: center; color: #A3A3A3; font-size: 11px; padding: 4px 0; border: 1px dashed #2E2E2E; border-radius: 5px">↑ High of day $4.67 · +46¢</div>
+<div style="position: relative; height: 384px">
+<div style="position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #262626"></div>
+<div style="position: absolute; left: 0; right: 0; top: 56px; display: flex; align-items: center; gap: 8px"><span style="width: 44%; text-align: right; color: #F2495C">Resistance · pivot</span><span style="flex: 1; height: 2px; background: #F2495C"></span><span style="width: 26%; color: #F2495C">4.30 <span style="color: #A3A3A3">+9¢</span></span></div>
+<div style="position: absolute; left: 0; right: 0; top: 120px; display: flex; align-items: center; gap: 8px"><span style="width: 44%; text-align: right; color: #A3A3A3">VWAP</span><span style="flex: 1; height: 1px; border-top: 1px dashed #FB923C"></span><span style="width: 26%; color: #FB923C">4.26 <span style="color: #A3A3A3">+5¢</span></span></div>
+<div style="position: absolute; left: 0; right: 0; top: 192px; display: flex; align-items: center; gap: 8px"><span style="width: 44%; text-align: right; font-weight: 700; color: #60A5FA">PRICE</span><span style="flex: 1; padding: 5px 0; text-align: center; border-radius: 5px; background: #60A5FA; color: #000000; font-weight: 700">4.21</span><span style="width: 26%; font-size: 11px; color: #A3A3A3">4.20 × 4.21</span></div>
+<div style="position: absolute; left: 0; right: 0; top: 248px; display: flex; align-items: center; gap: 8px"><span style="width: 44%; text-align: right; color: #1FC08A">Support · 9 &amp; 20 EMA</span><span style="flex: 1; height: 2px; background: #1FC08A"></span><span style="width: 26%; color: #1FC08A">4.18 <span style="color: #A3A3A3">−3¢</span></span></div>
+<div style="position: absolute; left: 0; right: 0; top: 328px; display: flex; align-items: center; gap: 8px"><span style="width: 44%; text-align: right; color: #737373">4.13</span><span style="flex: 1; height: 1px; background: #1E1E1E"></span><span style="width: 26%"></span></div>
+</div>
+<div style="text-align: center; color: #A3A3A3; font-size: 11px; padding: 4px 0; border: 1px dashed #2E2E2E; border-radius: 5px">↓ Pullback low $4.03 · −18¢</div>
+</section>
+
+<section aria-label="Setup" style="background: #111111; border: 1px solid #262626; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; align-items: baseline"><span style="font-size: 11px; letter-spacing: 0.18em; color: #A3A3A3">SETUP</span><span style="font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 22px; letter-spacing: 0.06em">IDLE</span></div>
+<div style="display: flex; gap: 4px" aria-hidden="true"><span style="flex: 1; height: 5px; border-radius: 3px; background: #EDEDED"></span><span style="flex: 1; height: 5px; border-radius: 3px; background: #2E2E2E"></span><span style="flex: 1; height: 5px; border-radius: 3px; background: #2E2E2E"></span><span style="flex: 1; height: 5px; border-radius: 3px; background: #2E2E2E"></span><span style="flex: 1; height: 5px; border-radius: 3px; background: #2E2E2E"></span></div>
+<span style="color: #CCCCCC">Choppy under $4.30. Needs a new high on volume.</span>
+</section>
+
+<section aria-label="Events" style="background: #111111; border: 1px solid #262626; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px">
+<span style="font-size: 11px; letter-spacing: 0.18em; color: #A3A3A3">LATEST</span>
+<div style="display: flex; gap: 10px"><span style="color: #A3A3A3">10:03</span><span style="color: #1FC08A">▲</span><span>Large buy volume</span></div>
+<div style="display: flex; gap: 10px"><span style="color: #A3A3A3">10:01</span><span style="color: #60A5FA">◆</span><span>Consolidating at $4.18</span></div>
+<div style="display: flex; gap: 10px"><span style="color: #A3A3A3">09:52</span><span style="color: #1FC08A">▲</span><span>Held support $4.18</span></div>
+</section>
+
+</div>
+</body>
+</html>
