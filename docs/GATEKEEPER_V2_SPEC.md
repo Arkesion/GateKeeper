@@ -116,7 +116,7 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 | Gospel | Front side | Web page: higher highs and higher lows, early in the breakout |
 | Gospel | Giveback | Web page: shallow pullback; pitfall, too deep |
 | Gospel | Spread ≤ 10¢ | Web page pitfall: wide spreads; 10¢ is MY OWN |
-| Context | VWAP | Not a micro-pullback criterion; value shown only |
+| Context | VWAP | Session VWAP. Since 4:00 in premarket; since 9:30 in regular hours and after-hours. Value shown only |
 | Context | 9/20 EMA | MY OWN; might be useful |
 | Context | Support | MY OWN (v1) |
 
@@ -232,7 +232,7 @@ Tests to write:
 - [ ] Save BRAI's 1-min PRE + RTH bars for 2026-10-28 as a JSON fixture
 - [ ] Assert VWAP, EMAs and MACD match the table within rounding
 - [ ] MACD regression: the signal line is an EMA of the MACD line, seeded only once enough MACD values exist (the v1 bug)
-- [ ] Find Webull's warm-up rules: VWAP anchor (4:00 AM?) and whether EMAs carry across sessions
+- [x] VWAP anchor: 4:00 before 9:30, then 9:30 through the close. EMAs still carry across the open.
 - [ ] Stop math: entry 5.60 / low 5.37 → stop 5.40; entry 5.60 / low 5.48 → stop 5.47
 - [ ] State machine: replay fixture bars and assert the expected state sequence
 - [ ] Smoke test before every deploy to corpus

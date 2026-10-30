@@ -60,9 +60,13 @@ for (const [date, session] of Object.entries(SESSIONS)) {
 
     const now = utcFromEtDateTime(date, 10, 15);
     const cfg = getVwapConfig(now);
-    assert.equal(cfg.vwapStartMs, open);
-    const kept = [beforeOpen, atOpen].filter(cfg.filterCandle);
-    assert.deepEqual(kept.map(bar => bar.datetime), [open]);
+    assert.equal(cfg.vwapStartMs, rth);
+    const atRth = stampBarEt({ datetime: rth });
+    const kept = [beforeOpen, atOpen, atRth].filter(cfg.filterCandle);
+    assert.deepEqual(kept.map(bar => bar.datetime), [rth]);
+
+    const preCfg = getVwapConfig(utcFromEtDateTime(date, 8, 0));
+    assert.equal(preCfg.vwapStartMs, open);
   });
 }
 
@@ -99,7 +103,7 @@ test('BRAI recompute values stay the same after the formatter change', () => {
   };
   const state = computeStateFromCache('BRAI');
   assert.equal(state.traffic_light_raw, 'NOT_ALIGNED');
-  assert.equal(state.context.vwap_value, 4.88);
+  assert.equal(state.context.vwap_value, 4.92);
   assert.equal(state.context.ema9_1m_value, 4.59);
   assert.equal(state.context.ema20_1m_value, 4.64);
   assert.equal(state.context.macd_histogram_value, -0.010065651945648006);

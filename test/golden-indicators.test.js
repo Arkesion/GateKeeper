@@ -90,17 +90,17 @@ function lastFinite(values) {
   return null;
 }
 
-/** Production formula: 4:00 AM ET session, HLC3 VWAP, first-close EMA, immediate MACD signal. */
+/** Production formula: session VWAP (4:00 before 9:30, else 9:30), first-close EMA, immediate MACD signal. */
 function measureProduction(bars, day) {
-  const today = bars.filter(bar => {
-    const et = etParts(bar.datetime);
-    return et.date === day && hmMin(et.hm) >= hmMin('04:00');
-  });
-  const closes = today.map(bar => bar.close).filter(Number.isFinite);
+  const today = bars.filter(bar => etParts(bar.datetime).date === day);
+  const lastHm = etParts(today[today.length - 1].datetime).hm;
+  const start = hmMin(lastHm) >= hmMin('09:30') ? '09:30' : '04:00';
+  const series = today.filter(bar => hmMin(etParts(bar.datetime).hm) >= hmMin(start));
+  const closes = series.map(bar => bar.close).filter(Number.isFinite);
   const macd = calcMACDExactTOS(closes);
   return {
-    price: today[today.length - 1].close,
-    vwap: calcVWAP(today),
+    price: series[series.length - 1].close,
+    vwap: calcVWAP(series),
     ema9: lastFinite(calcExpAverageTOS(closes, 9)),
     ema20: lastFinite(calcExpAverageTOS(closes, 20)),
     macd: lastFinite(macd.macdLine),

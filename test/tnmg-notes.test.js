@@ -126,6 +126,8 @@ test('VWAP anchor sweep at 09:56 is reported and does not change the formula', (
     }
   }
   scored.sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta));
+  const rth = scored.find(row => row.label === '09:30 rth-only');
+  assert.ok(Math.abs(rth.vwap - 4.317) < 0.002, rth.vwap);
   for (const row of scored) {
     console.log(`tnmg vwap ${row.label} ${row.vwap.toFixed(4)} delta=${row.delta.toFixed(4)}`);
   }
