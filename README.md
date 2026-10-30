@@ -1,210 +1,88 @@
 # Gatekeeper
 
-Real-time **front-side health monitor** for a single stock symbol. Gatekeeper answers one question continuously: *Is this ticker in play right now, or should I wait?*
+A read-only rail for one ticker at a time. It shows whether the seven Gospel checks are aligned, the setup state, and, once a fill arrives, the frozen stop and the day's lockouts. It does not place, modify, or cancel orders.
 
-It is **not** a scanner, setup classifier, or order router. It is a traffic-light panel plus contextual warnings, built for momentum day trading with Schwab market data and ThinkorSwim-aligned math where it matters (VWAP, MACD, EMAs).
+ChartsWatcher stays the scanner. Tickers are entered by hand.
 
-![Gatekeeper dashboard: NO ENTRY banner, row 1 and row 2 status dots, bearish and bullish warnings, context grid](docs/dashboard.png)
+## Architecture
 
-*Example: NVDA during after hours with NO ENTRY (row 1 failures), setup-row lights, and recent 1m warnings.*
+Three processes, one Redis.
 
-Engineering details: [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)
+- **webull-sidecar** holds the single Webull session. It builds 1-minute bars from Nasdaq Basic ticks, publishes quotes on `gk:live`, and writes account fills and positions when `WEBULL_ACCOUNT_ID` is set.
+- **Redis** is the bus. The sidecar writes bars, quotes, heartbeats, and account keys. The app reads them.
+- **gatekeeper** is the Node app. It turns those bars into the rail: indicators, the setup machine, tape slowdown, and the session book.
 
----
+`MARKET_DATA_PROVIDER` chooses the market-data source: `webull` or `schwab`. Schwab mode polls the Schwab HTTP API instead of the sidecar's tick stream. Account fills, positions, and lockouts are still read from the Webull sidecar, and only when the market-data provider is `webull`. In Schwab mode those live account updates do not apply.
 
-## Features
+## Market-data provider
 
-### Main banner (3 states)
+A new provider implements `MarketDataProvider` in `lib/providers/`.
 
-| State | Meaning |
-|--------|---------|
-| **NO ENTRY** | Any Row 1 GO check failed |
-| **CAUTION** | Row 1 green; setup row (4 lights) not fully clear |
-| **LOOK FOR SETUP** | Row 1 and Row 2 all green |
+Required:
 
-Row 2 issues (e.g. resistance reject) do **not** force NO ENTRY; only Row 1 failures do.
+- `start()`
+- `stop()`
+- `isDataStale()`
+- `stream(symbol)`
 
-### Row 1: five GO checks
+Optional, and only called when the method exists:
 
-- 9 EMA > 20 EMA (1m)
-- MACD histogram > 0 (1m, TOS ExpAverage)
-- Price above session VWAP (4:00 AM ET anchor)
-- No high-volume sell in last 8 minutes (≥85% of peak green vol after a buy run, or large reversal ≥75%; else 2× prior-8-bar avg)
-- Bid-ask spread ≤ $0.10
+- `getStreamStatus()`
+- `ensureDaily(symbol)`
+- `reclaim()`
+- `unstream(symbol)`
 
-### Row 2: setup row (four lights)
+`backfill` and `getState` are on the base class. Only the Webull provider calls them. Account data is not part of this interface. The header shows the active provider (`LIVE · Webull` or `LIVE · Schwab`). Tape slowdown needs Nasdaq prints, so in Schwab mode that row says `n/a in Schwab mode`.
 
-- **Resistance:** tri-state vs KEY LVL ↑
-- **Support:** tri-state vs KEY LVL ↓
-- **Front side:** buy-side structure (not a GO veto)
-- **Giveback:** pullback from most recent run (2+ greens, or one strong green ≥ move min); red if no run or deep giveback
-
-### Warnings (two columns)
-
-Timed bar warnings only list times from the **last 8 minutes**. Bearish and bullish columns; high-volume sell appears under **NO ENTRY** subtext only.
-
-### Context grid
-
-Price, day change, VWAP and delta, 9/20 EMA, MACD hist, key levels, session label, halt status. Hover cells for calculation hints.
-
----
-
-## Stack
-
-| Layer | Technology |
-|-------|------------|
-| API | Node.js 24, Express 5 |
-| UI | Vanilla HTML/CSS/JS (`public/index.html`) |
-| Data | Schwab Market Data API, Nasdaq halt RPC |
-| Deploy | Docker Compose (optional HTTPS) |
-
-### Project layout
-
-```
-Gatekeeper/
-  server.js           # Entry: HTTP server, wiring, shutdown
-  routes/api.js       # REST routes
-  lib/
-    config.js         # Environment and tuning constants
-    store.js          # Shared runtime state (cache, tokens)
-    auth.js           # OAuth and token persistence
-    schwab.js         # Schwab HTTP client and rate limiting
-    session.js        # ET session, candles, VWAP anchor
-    indicators.js     # EMA / MACD / VWAP (TOS math)
-    signals.js        # Warnings, levels, traffic light
-    halts.js          # Halt detection
-    state.js          # Poll loop and state cache
-  public/index.html   # Dashboard UI
-```
-
----
-
-## Requirements
-
-- Node.js 20+ (Docker image uses Node 24)
-- Schwab developer app with OAuth (Market Data production)
-- `.env`: copy from [`.env.example`](.env.example)
-
----
-
-## Configuration
-
-| Variable | Purpose |
-|----------|---------|
-| `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` | OAuth |
-| `PUBLIC_URL` | Base URL for OAuth redirect |
-| `REDIRECT_URI` | Must match Schwab app settings (`/callback`) |
-| `TOKEN_PATH` | Persisted tokens (Docker volume recommended) |
-| `QUOTE_POLL_MS` | Schwab quote poll (default 1000) |
-| `CANDLE_POLL_MS` | 1m candle poll (default 2000) |
-| `STATE_POLL_MS` | Frontend state poll hint in `/api/health` |
-| `DAILY_CACHE_MS` | Daily bars cache for key levels |
-| `INDICATOR_1M_CACHE_MS` | MACD series cache |
-| `NASDAQ_HALT_POLL_MS` | Nasdaq halt list refresh |
-
----
-
-## Local development
+## Setup
 
 ```bash
-cd Gatekeeper
-npm install
-cp .env.example .env   # fill in Schwab credentials
-node server.js
-```
-
-Open `http://localhost:3000`, enter a symbol, and complete Schwab login at `/login` if prompted.
-
----
-
-## Docker
-
-```bash
-docker compose up --build
-```
-
-Default compose maps Tailscale `100.96.105.85:4000` to container port 3000 and serves plain HTTP. Tailscale encrypts the link. A volume persists tokens.
-
----
-
-## API
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Dashboard UI |
-| `GET /login`, `GET /api/login` | Schwab OAuth |
-| `GET /callback` | OAuth redirect |
-| `GET /api/state/:symbol` | Full state JSON (cached server-side) |
-| `GET /api/health` | Auth, rate limits, poll cadence |
-| `GET /api/status` | Session hours / market session |
-
-Example `GET /api/state/AAPL` when ready: `status: ok`, `traffic_light_confirmed`, `front_side`, `level_signals`, `context`, `warnings`.
-
----
-
-## Production deployment
-
-Source is **baked into the Docker image**. Rebuild after code changes; `docker compose restart` alone does not refresh application code.
-
-On the server (after clone, `.env`, and the token volume are configured):
-
-```bash
-cd /path/to/Gatekeeper
 docker compose up --build -d
 ```
 
-If the repo is on the server with git:
+Copy `.env.example` to `.env` and fill in the values. Do not commit `.env`.
+
+| Variable | Role |
+| --- | --- |
+| `WEBULL_APP_KEY` | Webull OpenAPI app key |
+| `WEBULL_APP_SECRET` | Webull OpenAPI app secret |
+| `WEBULL_ACCOUNT_ID` | API account id, not the display number. Unset: the rail says "no account configured" and in-trade stays off |
+| `DAILY_MAX_LOSS_R` | Realized-R lock. Default 3 |
+| `DAILY_MAX_LOSS_USD` | Dollar lock. Default $0.50. It races the R lock |
+| `DEFAULT_R_PER_SHARE` | R used when a closed trade has no log line. Default $0.10. The session row says "R estimated" |
+| `MARKET_DATA_PROVIDER` | `webull` or `schwab`. Default in `.env.example` is `schwab` |
+| `SCHWAB_CLIENT_ID` | Schwab app key, used when the provider is Schwab |
+| `SCHWAB_CLIENT_SECRET` | Schwab app secret |
+
+Corpus sets `NODE_ENV=production`. The dev fill injector stays off unless `GK_INJECT_FILLS=1` and `NODE_ENV` is exactly `development`.
+
+## Deploy
+
+From cetus, push to `main`, then on corpus:
 
 ```bash
-./deploy.sh   # git pull && docker compose up --build -d
+cd ~/Gatekeeper
+bash deploy.sh
 ```
 
-To copy files from a dev machine (no git on the host):
+That pulls and runs `docker compose up --build -d`. Do not edit files on corpus.
 
-```bash
-scp -r lib routes server.js public/index.html user@your-server:/path/to/Gatekeeper/
-ssh user@your-server 'cd /path/to/Gatekeeper && docker compose up --build -d'
-```
+## Failure banners
 
-Set `PUBLIC_URL` and `REDIRECT_URI` in `.env` to your public HTTPS URL (Schwab OAuth must match).
+| Banner | Meaning |
+| --- | --- |
+| WAITING FOR DATA | The symbol is selected and a full state has not arrived |
+| DATA STALE | The Webull heartbeat is older than 3 seconds. Last values stay, dimmed |
+| GATEKEEPER UNREACHABLE | The browser has not reached the app for 3 seconds |
+| STREAM TAKEN BY ANOTHER SESSION | Another client took the one Webull stream. Reclaim is on the overlay |
+| DISCONNECTED | The last successful state is older than 60 seconds |
+| AUTH FAILED — re-login | Schwab auth failed. Webull mode does not use this path |
+| RATE LIMITED — backing off | Schwab returned a rate limit |
+| UNKNOWN SYMBOL | The ticker is not a symbol the provider accepts |
+| STOP HIT · YOU ARE STILL IN | Last price is under the frozen stop while the position is open |
+| DONE FOR THE DAY | Realized loss hit the R cap or the dollar cap, or three losers in a row. Until 4:00 AM ET |
+| FILLS OFFLINE | An account is configured, and the order stream is down or the position poll is older than 60 seconds |
+| no account configured | `WEBULL_ACCOUNT_ID` is unset |
+| ACCOUNT NOT FOUND | The configured id is not in the account list. No other account is used |
 
-Post-deploy smoke: see [TESTING.md](TESTING.md#production-smoke-post-deploy).
-
----
-
-## Documentation
-
-| File | Audience |
-|------|----------|
-| [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) | Engineering: architecture and operations |
-| [TESTING.md](TESTING.md) | QA: TOS verification and deploy smoke |
-
----
-
-## Trading hours
-
-Extended hours monitoring: roughly **4:00 AM to 8:00 PM ET**, with pre-market data where Schwab provides it.
-
----
-
-## Disclaimer
-
-> **Disclaimer:** This project is for educational purposes only, is not affiliated with Charles Schwab, and does not constitute financial advice. Use at your own risk.
-
-This project is not affiliated with, endorsed by, or sponsored by The Charles Schwab Corporation. All trademarks and service marks are the property of their respective owners.
-
-**No warranty.** The software is provided "AS IS", without warranty of any kind, express or implied, including but not limited to merchantability or fitness for a particular purpose.
-
-**Limitation of liability.** In no event shall the authors or copyright holders be liable for any financial losses, trading errors, or other damages arising from the use of this software.
-
-**Not financial advice.** Traffic-light states, warnings, and context values are for educational and informational purposes only. They are not financial, investment, or trading advice.
-
-**Schwab Developer API.** You are responsible for complying with Schwab's Developer API terms, rate limits, data usage policies, and authentication requirements when you run this software.
-
-**Your deployment.** Each operator runs their own instance. You must supply your own Schwab API credentials and OAuth app configuration. Credentials and tokens are stored only on your server (`.env`, `TOKEN_PATH`); this project does not operate a hosted service and does not collect credentials from users.
-
----
-
-## License
-
-Released under the [MIT License](LICENSE).
+ALIGNED and NOT ALIGNED are the verdict, not a lock. A tape caution does not change ALIGNED.
