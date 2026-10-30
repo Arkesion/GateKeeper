@@ -150,7 +150,7 @@
     }
     #chips .chip { grid-column: span 3; }
     #chips .chip:nth-child(n + 5) { grid-column: span 4; }
-    .chip { padding: 5px 8px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chip { padding: 4px 6px; border-radius: 5px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .chip.ok { background: rgba(31, 192, 138, 0.14); color: #1FC08A; }
     .chip.bad { background: rgba(242, 73, 92, 0.16); color: #F2495C; }
     .chip.warn { background: rgba(251, 191, 36, 0.14); color: #FBBF24; }
@@ -190,6 +190,17 @@
     .rung .name { width: 44%; text-align: right; overflow: hidden; white-space: nowrap; }
     .rung .mark { flex: 1; }
     .rung .val { width: 26%; white-space: nowrap; }
+    #axis { position: absolute; top: 0; right: 0; bottom: 0; width: 46px; pointer-events: none; }
+    .axis-tick, .axis-tag {
+      position: absolute;
+      right: 2px;
+      transform: translateY(-50%);
+      font-size: 10px;
+      line-height: 1;
+    }
+    .axis-tick { color: #737373; }
+    .axis-tag { padding: 1px 3px; border-radius: 3px; color: #000; font-weight: 700; }
+    .rung { right: 48px; }
     body.trade .rung .name { width: 40%; }
     body.trade .rung .val { width: 34%; }
     .rung .dim { color: #A3A3A3; }
@@ -646,16 +657,14 @@
     const histText = Number.isFinite(hist)
       ? `${hist < 0 ? '−' : ''}${Math.abs(hist).toFixed(2)}`
       : '';
-    const hvFail = fs.no_hv_sell === false
-      ? `✕ HV sell${fs.hv_sell_time ? ' ' + fs.hv_sell_time : ''}`
-      : `${mark(fs.no_hv_sell)}No HV sell`;
-    const bigFail = fs.no_big_red === false
-      ? `✕ Big red${fs.big_red_time ? ' ' + fs.big_red_time : ''}`
-      : `${mark(fs.no_big_red)}No big red`;
-    const tailWhen = fs.topping_tail_time ? ' ' + fs.topping_tail_time : '';
-    const tailFail = fs.no_topping_tail === false
-      ? `✕ Tail${tailWhen}`
-      : `${mark(fs.no_topping_tail)}No tail`;
+    function eventChip(phase, time, age, pass, word) {
+      if (phase === 'fail') return { text: `✕ ${word}${time ? ' ' + time : ''}`, tone: 'bad' };
+      if (phase === 'caution') return { text: `! ${word} ${time} · ${age}m`, tone: 'warn' };
+      return { text: `✓ ${pass}`, tone: 'ok' };
+    }
+    const hvChip = eventChip(fs.hv_sell_phase, fs.hv_sell_time, fs.hv_sell_age, 'No HV sell', 'HV sell');
+    const bigChip = eventChip(fs.big_red_phase, fs.big_red_time, fs.big_red_age, 'No big red', 'Big red');
+    const tailChip = eventChip(fs.topping_tail_phase, fs.topping_tail_time, fs.topping_tail_age, 'No tail', 'Tail');
     const macdHint = hints.macd || 'Histogram above 0 (MACD line above its signal line).';
     const tailHint = hints.no_topping_tail || 'Topping tail in the last 3 closed bars, cleared if a later bar closes above its high.';
     const items = [
@@ -664,12 +673,12 @@
         toneOf(fs.macd),
         fs.macd === false ? `MACD histogram ${histText}. ${macdHint}` : macdHint
       ),
-      chip(hvFail, toneOf(fs.no_hv_sell), hints.no_hv_sell),
-      chip(bigFail, toneOf(fs.no_big_red), hints.no_big_red),
+      chip(hvChip.text, hvChip.tone, hints.no_hv_sell),
+      chip(bigChip.text, bigChip.tone, hints.no_big_red),
       chip(
-        tailFail,
-        toneOf(fs.no_topping_tail),
-        fs.no_topping_tail === false ? `Topping tail${tailWhen}. ${tailHint}` : `No topping tail. ${tailHint}`
+        tailChip.text,
+        tailChip.tone,
+        fs.topping_tail_phase === 'pass' ? `No topping tail. ${tailHint}` : `Topping tail ${fs.topping_tail_time || ''}. ${tailHint}`
       ),
       chip(
         front?.state === 'red' ? '✕ Choppy' : `${front?.state === 'yellow' ? '! ' : '✓ '}Front side`,
@@ -740,24 +749,47 @@
     }
   }
 
-  function inMiddleThird(price, box) {
-    const span = box.hi - box.lo;
-    if (!(span > 0)) return false;
-    const pad = span / 3;
-    return price >= box.lo + pad - 1e-9 && price <= box.hi - pad + 1e-9;
+  function zoomWindow(price, levels) {
+    const MIN = 0.15;
+    const MAX = 0.60;
+    if (!Number.isFinite(price)) return null;
+    const finite = (levels || []).map(Number).filter(Number.isFinite);
+    const above = finite.filter(level => level > price + 1e-9).sort((a, b) => a - b)[0];
+    const below = finite.filter(level => level < price - 1e-9).sort((a, b) => b - a)[0];
+    let lo = price - MIN / 2;
+    let hi = price + MIN / 2;
+    const belowFits = Number.isFinite(below) && price - below <= MAX;
+    const aboveFits = Number.isFinite(above) && above - price <= MAX;
+    if (belowFits) lo = Math.min(lo, below);
+    if (aboveFits) hi = Math.max(hi, above);
+    if (hi - lo > MAX) {
+      if (belowFits && (!aboveFits || price - below <= above - price)) {
+        lo = below;
+        hi = lo + MAX;
+      } else if (aboveFits) {
+        hi = above;
+        lo = hi - MAX;
+      } else {
+        lo = price - MAX / 2;
+        hi = price + MAX / 2;
+      }
+    }
+    if (hi - lo < MIN) {
+      const mid = (lo + hi) / 2;
+      lo = mid - MIN / 2;
+      hi = mid + MIN / 2;
+    }
+    const span = hi - lo;
+    if (price < lo + span * 0.2 || price > hi - span * 0.2) {
+      lo = price - span / 2;
+      hi = price + span / 2;
+    }
+    return { lo, hi };
   }
 
-  function zoomFor(price, extraLo, extraHi) {
+  function zoomFor(price, levels) {
     if (!Number.isFinite(price)) return view;
-    if (!view || !inMiddleThird(price, view)) {
-      view = { lo: price - ZOOM, hi: price + ZOOM };
-    }
-    if (Number.isFinite(extraLo)) view = { lo: Math.min(view.lo, extraLo), hi: view.hi };
-    if (Number.isFinite(extraHi)) view = { lo: view.lo, hi: Math.max(view.hi, extraHi) };
-    if (view && !inMiddleThird(price, view)) {
-      const half = (view.hi - view.lo) / 2;
-      view = { lo: price - half, hi: price + half };
-    }
+    view = zoomWindow(price, levels);
     return view;
   }
 
@@ -796,11 +828,17 @@
       let color = '#A3A3A3';
       if (roles.has('resistance')) color = '#F2495C';
       else if (roles.has('support')) color = '#1FC08A';
-      else if (roles.size === 1 && roles.has('vwap')) color = '#FB923C';
+      else if (roles.has('vwap')) color = '#FB923C';
       else if (roles.has('ema9')) color = '#22D3EE';
       else if (roles.has('ema20')) color = '#E879F9';
       else if (roles.has('psych')) color = '#525252';
-      return { price, name, color, dash: roles.size === 1 && roles.has('vwap'), roles: [...roles] };
+      return {
+        price,
+        name,
+        color,
+        dash: roles.size === 1 && roles.has('vwap'),
+        roles: [...roles]
+      };
     });
   }
 
@@ -830,11 +868,20 @@
     const plot = document.getElementById('plot');
     const price = data.context?.price;
     const ctx = data.context || {};
-    let box = zoomFor(price);
-    if (trade && Number.isFinite(trade.stop) && Number.isFinite(trade.target)) {
-      view = null;
-      box = zoomFor(price, trade.stop - 0.02, trade.target + 0.02);
-    }
+    const step = 0.5;
+    const zoomLevels = [
+      ctx.key_level_up?.price,
+      ctx.key_level_down?.price,
+      ctx.vwap_value,
+      ctx.ema9_1m_value,
+      ctx.ema20_1m_value,
+      ctx.session_high,
+      ctx.session_low,
+      Number.isFinite(price) ? Math.floor((price - 1e-6) / step) * step : null,
+      Number.isFinite(price) ? Math.ceil((price + 1e-6) / step) * step : null
+    ];
+    if (trade) zoomLevels.push(trade.stop, trade.target);
+    const box = zoomFor(price, zoomLevels);
     document.getElementById('ladder-range').textContent = trade
       ? 'structure left · your levels right'
       : (box ? `${money(box.lo)} – ${money(box.hi)} · auto-zoom` : '');
@@ -850,6 +897,8 @@
     if (Number.isFinite(down?.price)) {
       levels.push({ price: down.price, name: 'Support' + (down.kind_label ? ' · ' + down.kind_label : ''), role: 'support' });
     }
+    if (Number.isFinite(ctx.session_high)) levels.push({ price: ctx.session_high, name: 'High of day', role: 'hod' });
+    if (Number.isFinite(ctx.session_low)) levels.push({ price: ctx.session_low, name: 'Low of day', role: 'lod' });
     if (box) {
       let dollar = Math.ceil(box.lo * 2 - 1e-9) / 2;
       for (; dollar <= box.hi + 1e-9; dollar = Math.round((dollar + 0.5) * 100) / 100) {
@@ -863,6 +912,21 @@
     const lowLines = [];
     if (box && Number.isFinite(ctx.session_high) && ctx.session_high > box.hi) {
       highLines.push(`↑ High of day ${money(ctx.session_high)} · ${cents(ctx.session_high - price)}`);
+    }
+    if (box && Number.isFinite(ctx.session_low) && ctx.session_low < box.lo) {
+      lowLines.push(`↓ Low of day ${money(ctx.session_low)} · ${cents(ctx.session_low - price)}`);
+    }
+    const outside = [
+      [up?.price, 'Resistance' + (up?.kind_label ? ' · ' + up.kind_label : '')],
+      [ctx.ema9_1m_value, '9 EMA'],
+      [ctx.ema20_1m_value, '20 EMA'],
+      [down?.price, 'Support' + (down?.kind_label ? ' · ' + down.kind_label : '')]
+    ];
+    for (const [level, name] of outside) {
+      if (!box || !Number.isFinite(level) || (level >= box.lo && level <= box.hi)) continue;
+      const line = `${name} ${px(level)} · ${cents(level - price)}`;
+      if (level > box.hi) highLines.push(line);
+      else lowLines.push(line);
     }
     if (box && Number.isFinite(ctx.vwap_value) && ctx.vwap_value > box.hi) {
       highLines.push(`VWAP ${px(ctx.vwap_value)} · ${cents(ctx.vwap_value - price)}`);
@@ -915,18 +979,26 @@
       const line = level.dash
         ? '<span style="display:block;border-top:1px dashed #FB923C"></span>'
         : `<span style="display:block;height:${level.roles.includes('psych') && level.roles.length === 1 ? 1 : 2}px;background:${level.color}"></span>`;
-      const el = rung(
-        0,
-        level.name,
-        line,
-        `${px(level.price)} <span class="dim">${delta}</span>`,
-        level.color
-      );
-      if (level.roles.includes('resistance') || level.roles.includes('support')) el.title = pivotHover;
-      rows.push({ y: yOf(level.price, box, height), el });
+      const el = rung(0, level.name, line, '', level.color);
+      const hover = [`${px(level.price)} · ${delta}`];
+      if (level.roles.includes('resistance') || level.roles.includes('support')) hover.unshift(pivotHover);
+      el.title = hover.join('\n');
+      const psychOnly = level.roles.length === 1 && level.roles.includes('psych');
+      rows.push({
+        y: yOf(level.price, box, height),
+        el,
+        tag: psychOnly ? null : level.color,
+        tagPrice: psychOnly ? null : level.price
+      });
     }
     const pill = pricePillLabel(beside, sameEntry);
-    rows.push({ y: yOf(price, box, height), el: rung(0, pill.label, '', '', '#60A5FA'), price: true });
+    rows.push({
+      y: yOf(price, box, height),
+      el: rung(0, pill.label, '', '', '#60A5FA'),
+      price: true,
+      tag: '#60A5FA',
+      tagPrice: price
+    });
     const priceRow = rows[rows.length - 1].el;
     if (pill.title) priceRow.title = pill.title;
     const mark = priceRow.querySelector('.mark');
@@ -970,10 +1042,30 @@
       }
       placed.push(row);
     }
+    const axis = document.createElement('div');
+    axis.id = 'axis';
+    const tickStep = box.hi - box.lo <= 0.30 + 1e-9 ? 0.05 : 0.10;
+    const tagPrices = placed.map(row => row.tagPrice).filter(Number.isFinite);
+    for (let tick = Math.ceil(box.lo / tickStep - 1e-9) * tickStep; tick <= box.hi + 1e-9; tick = Math.round((tick + tickStep) * 100) / 100) {
+      if (tagPrices.some(level => Math.round(Math.abs(level - tick) * 100) < 1)) continue;
+      const el = document.createElement('div');
+      el.className = 'axis-tick';
+      el.style.top = `${yOf(tick, box, height)}px`;
+      el.textContent = tick.toFixed(2);
+      axis.append(el);
+    }
     for (const row of placed) {
       row.el.style.top = `${row.y}px`;
       plot.append(row.el);
+      if (!Number.isFinite(row.tagPrice)) continue;
+      const tag = document.createElement('div');
+      tag.className = 'axis-tag';
+      tag.style.top = `${row.y}px`;
+      tag.style.background = row.tag || '#A3A3A3';
+      tag.textContent = px(row.tagPrice);
+      axis.append(tag);
     }
+    plot.append(axis);
   }
 
   function tradePlan(data) {
@@ -1095,7 +1187,7 @@
     document.getElementById('live-age').innerHTML = `<span class="live">LIVE${age ? ' · ' + age : ''}</span>`;
     renderPillars();
     renderVerdict(data);
-    renderSetup();
+    renderSetup(data);
     renderNotes(data.notes);
     const plan = TRADE ? tradePlan(data) : null;
     if (plan) renderTrade(data, plan);

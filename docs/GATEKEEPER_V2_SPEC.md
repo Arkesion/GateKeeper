@@ -124,14 +124,14 @@ Context dots render grey with values and never affect the verdict. The verdict r
 | Check | Pass label | Fail label | Rule |
 | --- | --- | --- | --- |
 | MACD | ✓ MACD | ✕ MACD −0.01 | Histogram above 0 (forming bar OK). The chip is the short label; the hover says MACD histogram |
-| High-volume sell | ✓ No HV sell | ✕ HV sell 11:10 | Red bar volume above the largest green bar of the run, last 8 min |
-| Large sell candle | ✓ No big red | ✕ Big red 11:10 | Red body ≥ 2× the 10-bar median body, last 8 min |
-| Topping tail | ✓ No tail | ✕ Tail 09:41 | Spec tail rule; in the last 3 closed bars, cleared early if a later bar closes above the tail's high. The hover says Topping tail |
+| High-volume sell | ✓ No HV sell | ✕ HV sell 14:02 | Red bar volume above the largest green bar of the run. Decay below |
+| Large sell candle | ✓ No big red | ✕ Big red 14:02 | Red body ≥ 2× the 10-bar median body. Decay below |
+| Topping tail | ✓ No tail | ✕ Tail 14:02 | Spec tail rule. Decay below. The hover says Topping tail |
 | Front side | ✓ Front side | ✕ Choppy | Higher highs and higher lows |
-| Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg |
+| Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg, capped at 100%. `Giveback —` when there is no leg or the leg is under $0.05 |
 | Spread | ✓ Spread 1¢ | ✕ Spread 14¢ | ≤ 10¢ (MY OWN number) |
 
-High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; citations to add. Daily-chart resistance shows in the ticker header and on the pillar tab, muted, amber when the nearest prior high is within 10%. Example: `Daily res. 3.54 · +3%`. It does not change ALIGNED.
+High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; citations to add. Daily-chart resistance shows in the ticker header and on the pillar tab, muted, amber when the nearest prior high is within 10%. A gap under 1% prints cents, the same format as the ladder (`Daily res. 3.42 · +1¢`). At or above 1% it stays a percent (`Daily res. 3.54 · +3%`). It does not change ALIGNED.
 
 **Notes rules (revised 2026-10-30).**
 
@@ -143,17 +143,23 @@ High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; 
 
 **Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with seven Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
 
-**Chips (revised 2026-10-30).** Seven chips, in the Gospel-set order, each on one line. A chip names the state, not the rule. MACD fails as `✕ MACD −0.01`; the hover says MACD histogram. High-volume sell and the large red candle each cite their own bar start. A topping tail passes as `✓ No tail` and fails as `✕ Tail 09:41`; the hover says Topping tail. Front side fails as `✕ Choppy`. Giveback shows the percent and spread shows the cents.
+**Chips (revised 2026-10-30).** Seven chips, in the Gospel-set order, each on one line. A chip names the state, not the rule. MACD fails as `✕ MACD −0.01`; the hover says MACD histogram. High-volume sell, the large red candle, and a topping tail cite the chart time, which is the bar start plus one minute. A topping tail passes as `✓ No tail` and fails as `✕ Tail 14:02`; the hover says Topping tail. Front side fails as `✕ Choppy`. Giveback shows the percent, or `Giveback —` when the leg is missing or under $0.05, and spread shows the cents.
+
+**Event-check decay (MY OWN).** For high-volume sell, big red, and topping tail, age starts when the bar closes. 0–5 minutes is a fail (`✕ Tail 14:02`). 5–15 minutes is an amber caution (`! Tail 14:02 · 9m`) and does not count toward NOT ALIGNED. After 15 minutes it is gone. A later close above the tail's high clears the tail. A later close above the big red bar's open clears the big red. A high-volume sell has no price clear, only the clock. The windows are `eventFailMs` (5 minutes) and `eventCautionMs` (15 minutes).
 
 **Intraday pivots (unchanged detector).** A pivot high is a bar whose high is not beaten by any of the 3 bars on the left or the bars on the right. The right side is 3 bars, or fewer at the end of the series, so a fresh high can count before three later bars have printed. Pivot lows use the same window on the lows. An equal neighbor still counts; only a strictly higher high, or a strictly lower low, knocks the swing out. Swings come from today's completed 1-minute bars once at least 7 exist. A separate 48-bar pass builds 5-cent clusters with at least two touches. "Nearest" is a score, not the closest price: candidates beyond `max($0.01, 0.2% of price)` score `touches × 100` plus a half/whole-dollar bonus. Two or more touches beat a single touch. Ties go to the closer price. The most recent swing is always in that pool. The pick is labeled Premarket High, HOD, Whole Dollar, Half Dollar, or Pivot when it sits within `max($0.03, 1.2% of price)` of that kind. It is recomputed on every state refresh. Those rows stay on the ladder. They do not affect ALIGNED.
 
-**Ladder levels.** Price is always its own blue pill. A level within 2¢ of price is not a separate row; its name sits beside the pill (`· 9 EMA`). The 9 EMA line is cyan and the 20 EMA line is magenta. Green and red are only support and resistance. Half- and whole-dollar lines in the zoomed range are faint and labeled `$3.50`. The high-of-day edge marker stays, and the pullback-low marker stays when that low is below the range. VWAP gets an edge marker only when it is outside the range (`VWAP 4.14 · +90¢`). No other new edge markers.
+**Ladder levels.** Price is always its own blue pill. A level within 2¢ of price is not a separate row; one level name sits beside the pill, in order resistance, support, VWAP, EMA, and `+N` if more. The full list is the hover. The 9 EMA line is cyan and the 20 EMA line is magenta. Green and red are only support and resistance. Half- and whole-dollar lines in the zoomed range are faint. Cent distances are in the row hover, not on the row. The right edge is a price axis: ticks every 5¢ when the span is 30¢ or less, otherwise every 10¢, plus a colored tag for each level (price blue, resistance red, support green, VWAP orange, 9 EMA cyan, 20 EMA magenta). Names stay on the left.
 
-**Event times.** Every note and warning label is the bar's start time in ET. Live bars use the minute of the trade. An HTTP replace keeps that start; it does not move the label by a minute.
+**Auto-zoom.** The window includes the nearest meaningful level above and below price: the support and resistance pivots, VWAP, the 9 and 20 EMA, high of day, low of day, and the nearest half or whole dollar. The span is at least 15¢ and at most 60¢. A level past that becomes an edge marker. Price stays in the middle 60% of the window.
 
-**Setup line until Phase 3.** The setup title stays IDLE. Price under the 9 EMA is not its own setup state. The Phase 3 state machine below is not on the ladder yet.
+**Low of day.** The low is the minimum low from 4:00 ET, including premarket. In range it is a ladder line named `Low of day`. Below the range it is a bottom edge marker, `↓ Low of day $3.64 · −18¢`, the same shape as high of day.
+
+**Event times.** Stored bar times stay the Webull start. Every note, chip, and hover shows that start plus one minute, which is how the Webull chart labels the bar. An HTTP replace keeps the stored start.
 
 Rows marked v1 are summaries. The v1 code's existing definitions and thresholds are the source of truth; port them exactly and change behavior only where this spec says so (the MACD seeding fix).
+
+**Setup line until Phase 3.** The setup title stays IDLE. Price under the 9 EMA is not its own setup state. The Phase 3 state machine below is not on the ladder yet.
 
 **Setup line (Phase 3).** One line under the dots reports the state machine, with the trade math pre-computed before any entry. Until that phase ships, the ladder shows IDLE.
 

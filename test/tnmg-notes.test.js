@@ -15,12 +15,14 @@ const {
   formatEtHm,
   formatChartHm,
   pricePillLabel,
-  computeGivebackSignal,
+  activeEvent,
+  zoomWindow,
   macdGospelPositive,
   buildNotes,
   relativeVolume,
   rvolColor,
   computeResistanceSignal,
+  computeGivebackSignal,
   computeFrontSideSignal,
   activeToppingTail,
   isLargeSellCandleBar,
@@ -208,15 +210,52 @@ test('VWAP anchor sweep at 09:56 is reported and does not change the formula', (
   }
 });
 
-test('topping tail chip cites 09:41 through 09:44 and clears once 09:44 has closed', () => {
-  function closedBefore(hm) {
-    return bars.filter(bar => bar.datetime < barAt(hm).datetime);
-  }
-  for (const hm of ['09:42', '09:43', '09:44']) {
-    const hit = activeToppingTail(closedBefore(hm));
-    assert.equal(formatEtHm(hit.datetime), '09:41', hm);
-  }
-  assert.equal(activeToppingTail(closedBefore('09:45')), null);
+test('event checks fail for 5 minutes, caution through 15, then clear', () => {
+  const tail = barAt('09:41');
+  const closed = bars.filter(bar => bar.datetime <= tail.datetime);
+  const closeAt = tail.datetime + 60000;
+  const fresh = activeEvent(closed, isToppingTailBar, closeAt + 60 * 1000, bar => bar.high);
+  assert.equal(fresh.phase, 'fail');
+  assert.equal(fresh.time, '09:42');
+  const caution = activeEvent(closed, isToppingTailBar, closeAt + 9 * 60 * 1000, bar => bar.high);
+  assert.equal(caution.phase, 'caution');
+  assert.equal(caution.time, '09:42');
+  assert.equal(caution.age_min, 9);
+  const gone = activeEvent(closed, isToppingTailBar, closeAt + 16 * 60 * 1000, bar => bar.high);
+  assert.equal(gone.phase, 'pass');
+  const later = {
+    datetime: tail.datetime + 60000,
+    open: tail.high,
+    high: tail.high + 0.05,
+    low: tail.high,
+    close: tail.high + 0.02,
+    volume: 1000
+  };
+  const cleared = activeEvent([tail, later], isToppingTailBar, later.datetime + 30000, bar => bar.high);
+  assert.equal(cleared.phase, 'pass');
+  const red = { datetime: closeAt, open: 4, high: 4.2, low: 3.6, close: 3.7, volume: 1000 };
+  const isRed = bar => bar.volume === 1000;
+  const still = activeEvent([red], isRed, closeAt + 60000, bar => bar.open);
+  assert.equal(still.phase, 'fail');
+  const back = { datetime: closeAt + 60000, open: 3.8, high: 4.1, low: 3.75, close: 4.05, volume: 10 };
+  const opened = activeEvent([red, back], isRed, back.datetime + 30000, bar => bar.open);
+  assert.equal(opened.phase, 'pass');
+});
+
+test('zoom keeps price in the middle and includes a nearby level', () => {
+  const tight = zoomWindow(3.54, []);
+  assert.ok(Math.abs((tight.hi - tight.lo) - 0.15) < 1e-9);
+  assert.ok(Math.abs(((tight.lo + tight.hi) / 2) - 3.54) < 1e-9);
+  const near = zoomWindow(3.54, [3.40, 3.70]);
+  assert.ok(near.lo <= 3.40 + 1e-9);
+  assert.ok(near.hi >= 3.70 - 1e-9);
+  assert.ok(near.hi - near.lo <= 0.60 + 1e-9);
+  const span = near.hi - near.lo;
+  assert.ok(3.54 >= near.lo + span * 0.2 - 1e-9);
+  assert.ok(3.54 <= near.hi - span * 0.2 + 1e-9);
+  const far = zoomWindow(3.54, [5.00]);
+  assert.ok(far.hi < 5);
+  assert.ok(far.hi - far.lo <= 0.60 + 1e-9);
 });
 
 test('11:10 volume and body chips cite that bar separately', () => {
