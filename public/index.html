@@ -333,6 +333,7 @@
     <span id="live-age"><span class="live">LIVE</span></span>
   </header>
   <p id="account-note" class="account-note" hidden></p>
+  <p id="fills-note" class="account-note bad" hidden></p>
 
   <section id="verdict" aria-label="Alignment">
     <div class="banner-row">
@@ -1205,6 +1206,20 @@
     }
   }
 
+  function renderFills(source) {
+    const note = document.getElementById('fills-note');
+    if (!note || !source) return;
+    const configured = source.account?.status === 'ok';
+    let age = source.positions_poll_age_s;
+    if (age == null && Number.isFinite(source.positions_poll_at)) {
+      age = Math.max(0, (Date.now() - source.positions_poll_at) / 1000);
+    }
+    const offline = source.orders_stream !== 'connected' || age == null || age > 60;
+    const show = configured && offline;
+    note.hidden = !show;
+    note.textContent = show ? 'FILLS OFFLINE' : '';
+  }
+
   function moneySigned(value) {
     if (!Number.isFinite(value)) return '—';
     const up = value >= 0;
@@ -1315,6 +1330,7 @@
     renderSetup(data);
     renderNotes(data.notes, data.events_stale);
     renderAccount(data.account?.status);
+    renderFills(data);
     if (data.account?.status === 'ok' || !data.account?.status) adoptPosition(data.position);
     const plan = tradePlan(data);
     document.body.classList.toggle('trade', Boolean(plan));
@@ -1490,6 +1506,7 @@
       if (data.stream === 'stream_taken') feedTaken = true;
       else if (data.stream === 'streaming') feedTaken = false;
       renderAccount(data.account?.status);
+      renderFills(data);
       updateOverlays();
     } catch { /* keep last health */ }
   }

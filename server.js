@@ -164,6 +164,24 @@ registerRoutes(app, {
       return null;
     }
   },
+  getFillWatch: () => {
+    if (config.marketDataProvider !== 'webull') {
+      return { orders_stream: null, positions_poll_age_s: null, open_positions: null };
+    }
+    try {
+      const snap = getProvider().accountSnapshot;
+      const at = Number(snap?.positionsPollAt);
+      const age = Number.isFinite(at) ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null;
+      const open = Number(snap?.openPositions);
+      return {
+        orders_stream: snap?.ordersStream || null,
+        positions_poll_age_s: age,
+        open_positions: Number.isFinite(open) ? open : null
+      };
+    } catch {
+      return { orders_stream: null, positions_poll_age_s: null, open_positions: null };
+    }
+  },
   getStreamStatus: async () => {
     if (config.marketDataProvider !== 'webull') return null;
     const provider = getProvider();

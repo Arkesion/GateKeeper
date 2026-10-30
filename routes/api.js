@@ -41,7 +41,10 @@ module.exports = function registerRoutes(app, deps) {
         candles: CANDLE_POLL_MS,
         frontend_state: config.frontendStatePollMs
       },
-      account: typeof deps.getAccountStatus === 'function' ? deps.getAccountStatus() : null
+      account: typeof deps.getAccountStatus === 'function' ? deps.getAccountStatus() : null,
+      ...(typeof deps.getFillWatch === 'function'
+        ? deps.getFillWatch()
+        : { orders_stream: null, positions_poll_age_s: null, open_positions: null })
     });
   });
 

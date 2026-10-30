@@ -2,7 +2,16 @@
 
 import unittest
 
-from events import find_account, mask_display, parse_account_list, parse_order_event, parse_positions
+from events import (
+    classify_event_log,
+    find_account,
+    mask_display,
+    parse_account_list,
+    parse_order_event,
+    parse_positions,
+    parse_recent_fills,
+    recent_fill_line,
+)
 
 
 class ParseEventsTest(unittest.TestCase):
@@ -51,3 +60,44 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(mask_display(found["display"]), "CVU7****")
         self.assertEqual(found["type"], "cash")
         self.assertIsNone(find_account(rows, "CVU7R6E8"))
+
+    def test_event_log_drops_the_subscribe_payload(self):
+        self.assertIsNone(classify_event_log("subscribe success, response: account_id=SECRET"))
+
+    def test_grpc_error_is_a_disconnect_without_the_debug_string(self):
+        kind, reason = classify_event_log(
+            "grpc error code:UNAVAILABLE, error msg:unavailable, details:debug SECRET"
+        )
+        self.assertEqual(kind, "disconnected")
+        self.assertEqual(reason, "UNAVAILABLE unavailable")
+        self.assertNotIn("SECRET", reason)
+
+    def test_retry_is_a_reconnect(self):
+        kind, reason = classify_event_log("next retry will be started in 5000 ms, retry_context:SECRET")
+        self.assertEqual(kind, "reconnecting")
+        self.assertEqual(reason, "in 5000 ms")
+        self.assertNotIn("SECRET", reason)
+
+    def test_recent_fill_line_is_symbol_side_and_time(self):
+        line = recent_fill_line(parse_recent_fills({
+            "orders": [
+                {
+                    "symbol": "TNMG",
+                    "side": "BUY",
+                    "order_status": "FILLED",
+                    "filled_time": "2026-10-30T15:11:00Z",
+                    "filled_price": "4.20",
+                    "order_id": "ord-secret",
+                },
+                {
+                    "symbol": "BRAI",
+                    "side": "SELL",
+                    "order_status": "CANCELLED",
+                    "filled_time": "2026-10-30T16:00:00Z",
+                },
+            ]
+        }))
+        self.assertEqual(line, "recent fill count=1 last=TNMG BUY 2026-10-30T15:11:00Z")
+        self.assertNotIn("4.20", line)
+        self.assertNotIn("ord-secret", line)
+        self.assertEqual(recent_fill_line([]), "recent fill count=0 last=none")
