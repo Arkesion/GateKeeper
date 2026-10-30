@@ -12,6 +12,7 @@ import signal
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import redis
 
@@ -29,6 +30,7 @@ from webull_data import (
     disconnect_reason,
     fetch_bars,
     fetch_closed_bars,
+    fetch_daily_bars,
     fetch_quote,
     make_data_client,
     make_streaming_client,
@@ -375,6 +377,8 @@ class Sidecar:
                     self._watch(cmd)
                 elif op == "unwatch":
                     self._unwatch(str(cmd.get("symbol") or "").upper())
+                elif op == "daily":
+                    self._daily(str(cmd.get("symbol") or "").upper())
                 elif op == "reclaim":
                     self.taken.clear()
                 else:
@@ -385,6 +389,23 @@ class Sidecar:
                 LOG.error("command failed: %s", exc)
                 if cmd_id:
                     self._ack(cmd_id, False, str(exc))
+
+    def _daily(self, symbol):
+        """HTTP daily bars once per ticker per ET day. Does not touch the MQTT session."""
+        if not symbol:
+            raise RuntimeError("symbol required")
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        key = f"gk:daily:{symbol}"
+        raw = self.redis.get(key)
+        if raw:
+            try:
+                cached = json.loads(raw)
+                if cached.get("day") == today and isinstance(cached.get("bars"), list):
+                    return
+            except json.JSONDecodeError:
+                pass
+        bars = fetch_daily_bars(self.data, symbol, self.limiter)
+        self.redis.set(key, json.dumps({"day": today, "bars": bars}))
 
     def _watch(self, cmd):
         symbol = str(cmd.get("symbol") or "").upper()

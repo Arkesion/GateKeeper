@@ -170,6 +170,33 @@ def fetch_bars(data_client, symbol, start_ms, end_ms, sessions, limiter=None):
     return dedupe_bars(collected)
 
 
+def fetch_daily_bars(data_client, symbol, limiter=None):
+    """One daily history call. The caller caches it for the rest of the ET day."""
+    limiter = limiter or LIMITER
+    symbol = symbol.upper()
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - 40 * 24 * 60 * 60 * 1000
+    limiter.acquire("bars")
+    response = data_client.market_data.get_batch_history_bar(
+        [symbol],
+        Category.US_STOCK.name,
+        Timespan.D.name,
+        count="20",
+        real_time_required=True,
+        trading_sessions=["RTH"],
+        start_time=start_ms,
+        end_time=end_ms,
+    )
+    _raise_for_status(response, "daily bars")
+    bars = []
+    for raw in unwrap_bars(response_json(response)):
+        bar = normalize_bar(raw)
+        if bar and bar["volume"] > 0:
+            bars.append(bar)
+    bars.sort(key=lambda bar: bar["datetime"])
+    return bars[-20:]
+
+
 def fetch_closed_bars(data_client, symbol, end_minute_ms, count=3, sessions=None, limiter=None):
     """Last `count` closed 1-minute bars ending at end_minute_ms. One HTTP call."""
     end_minute_ms = int(end_minute_ms)

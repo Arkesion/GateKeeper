@@ -73,10 +73,7 @@ Thresholds live in one config file so they can be tuned without code changes.
 
 **Hours since news** is colored by sentiment, not by age: green = Good, yellow = Neutral, red = Bad. Opacity fades as hours increase, so a 20-hour-old catalyst reads weaker than a 20-minute-old one. No news in 24 hours shows grey, which fails pillar 5.
 
-**RVOL definition (decide one, match ChartsWatcher).**
-
-- Option A, simple: today's cumulative volume ÷ average daily volume over 10 days. Understates RVOL early in pre-market.
-- Option B, time-of-day: today's volume so far ÷ average volume by the same clock time over 10 days. What most scanners show.
+**RVOL definition.** Option A: today's cumulative volume ÷ the average daily volume of the prior 10 completed sessions. Today is not part of the average. This understates RVOL early in the day.
 
 **Sentiment pipeline.**
 

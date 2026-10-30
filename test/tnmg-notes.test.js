@@ -13,7 +13,9 @@ const {
   isToppingTailBar,
   formatEtHm,
   macdGospelPositive,
-  buildNotes
+  buildNotes,
+  relativeVolume,
+  rvolColor
 } = require('../lib/signals');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -118,6 +120,23 @@ test('TNMG notes name the tail, the support hold, and the large buy', () => {
   assert.equal(buy && buy.time, '10:02');
   assert.equal(held && held.side, 'BULL');
   assert.equal(held && held.time, '10:15');
+});
+
+test('RVOL uses the prior 10 completed days and not today', () => {
+  const now = Date.parse('2026-10-30T15:00:00Z');
+  const midnight = Date.parse('2026-10-30T04:00:00Z');
+  const day = 24 * 60 * 60 * 1000;
+  const daily = [];
+  for (let i = 1; i <= 10; i++) {
+    daily.push({ datetime: midnight - i * day, volume: 100000, open: 1, high: 1, low: 1, close: 1 });
+  }
+  daily.push({ datetime: midnight, volume: 9000000, open: 1, high: 1, low: 1, close: 1 });
+  const session = [{ datetime: now, volume: 600000, open: 1, high: 1, low: 1, close: 1 }];
+  assert.equal(relativeVolume(daily, session, now), 6);
+  assert.equal(rvolColor(6), '#FBBF24');
+  assert.equal(rvolColor(20), '#1FC08A');
+  assert.equal(rvolColor(20.1), '#C4B5FD');
+  assert.equal(relativeVolume([], session, now), null);
 });
 
 test('VWAP anchor sweep at 09:56 is reported and does not change the formula', () => {
