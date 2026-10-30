@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from events import (
     classify_event_log,
+    day_lots,
     find_account,
     history_bounds,
     mask_display,
@@ -151,6 +152,19 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(line, "recent fill count=2 last=PURR SELL 2026-10-29 12:22 ET")
         self.assertNotIn("secret", line)
         self.assertNotIn("12.18", line)
+        lots = day_lots(parse_recent_fills({
+            "data": [{"orders": [{
+                "symbol": "PURR",
+                "side": "SELL",
+                "status": "FILLED",
+                "filled_quantity": "1",
+                "filled_price": "12.18",
+                "filled_time": 1793290965286,
+                "client_order_id": "secret-sell",
+                "order_id": "broker-sell",
+            }]}]
+        }))
+        self.assertEqual(lots[0]["order_id"], "secret-sell")
 
     def test_buy_event_shape_masks_ids(self):
         masked = mask_event({

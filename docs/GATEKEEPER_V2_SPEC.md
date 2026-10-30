@@ -205,17 +205,17 @@ Worked example, entry $5.60, pullback low $5.37:
 | R | $0.20 |  |
 | 1R / 2R / 3R | $5.80 / $6.00 / $6.20 |  |
 
-**Closing.** When the position is flat, the trade log line records symbol, entry and exit averages, shares, realized dollars, R multiple, duration, setup state at entry, and the failing Gospel checks at entry.
+**Closing.** When the position is flat, the trade log line records symbol, entry and exit averages, shares, realized dollars, R multiple, the frozen stop, R per share, the order ids that made the trade, duration, setup state at entry, and the failing Gospel checks at entry.
 
 **Risk lockouts.** These take over the whole screen and cannot be dismissed from the UI. The live price and the position stay visible underneath, dimmed. Lockout state is written to the data volume and restored after a restart.
 
 | Condition | Display | Source |
 | --- | --- | --- |
 | Last price below the frozen stop while a position is open | Full-screen red: STOP HIT · YOU ARE STILL IN, until flat | MY OWN |
-| Realized loss reaches `DAILY_MAX_LOSS_R` (default 3) or `DAILY_MAX_LOSS_USD` when that is set, whichever comes first | DONE FOR THE DAY until 4:00 AM ET the next session | Ross Rule 2 |
+| Realized loss reaches `DAILY_MAX_LOSS_R` (default 3) or `DAILY_MAX_LOSS_USD` (default $0.50), whichever comes first | DONE FOR THE DAY until 4:00 AM ET the next session | Ross Rule 2 |
 | Three consecutive losing trades | Same overlay, same reset | Ross Rule 3 |
 
-A loser is realized P&L below zero. A scratch, absolute P&L under 1 cent per share, neither counts as a loser nor resets the streak (MY OWN). While a position is below its stop, STOP HIT is the overlay on screen. After the position is flat, a day lock remains until 4:00 AM ET. The session row shows realized dollars, losers as `N of 3`, and the max loss still left.
+A loser is realized P&L below zero. A scratch, absolute P&L under 1 cent per share, neither counts as a loser nor resets the streak (MY OWN). While a position is below its stop, STOP HIT is the overlay on screen. After the position is flat, a day lock remains until 4:00 AM ET. The session row shows realized dollars, losers as `N of 3`, and the max loss still left. After a restart, each closed trade takes its R from the log line with the same order ids. A trade with no log match, taken while Gatekeeper was down, uses `DEFAULT_R_PER_SHARE` (default $0.10) and the session row says `R estimated`.
 
 Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists only when `GK_INJECT_FILLS=1` and `NODE_ENV` is exactly `development`. An unset `NODE_ENV` refuses it. Corpus sets `NODE_ENV=production`. The injector exists so the lockouts can be tested without a trade. Exit warnings stay Phase 6.
 

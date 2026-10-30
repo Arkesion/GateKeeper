@@ -389,7 +389,7 @@
   </section>
 
   <section id="risk" class="stats" aria-label="Session risk">
-    <div class="box"><div class="k">REALIZED</div><div class="v" id="risk-realized">—</div></div>
+    <div class="box"><div class="k">REALIZED</div><div class="v" id="risk-realized">—</div><div class="k" id="risk-estimated" hidden>R estimated</div></div>
     <div class="box"><div class="k">LOSERS</div><div class="v" id="risk-losers">0 of 3</div></div>
     <div class="box"><div class="k">MAX LOSS LEFT</div><div class="v" id="risk-left">—</div></div>
   </section>
@@ -1369,10 +1369,14 @@
       realized.textContent = '—';
       losers.textContent = '0 of 3';
       left.textContent = '—';
+      const estimated = document.getElementById('risk-estimated');
+      if (estimated) estimated.hidden = true;
       return;
     }
     realized.textContent = moneySigned(session.realized_usd || 0);
     realized.style.color = (session.realized_usd || 0) < 0 ? '#F2495C' : '#1FC08A';
+    const estimated = document.getElementById('risk-estimated');
+    if (estimated) estimated.hidden = session.r_estimated !== true;
     losers.textContent = `${session.streak || 0} of 3`;
     if (session.max_loss_unit === 'USD') left.textContent = money(session.max_loss_left);
     else if (Number.isFinite(session.max_loss_left)) left.textContent = `${session.max_loss_left.toFixed(1)}R`;

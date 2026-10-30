@@ -269,28 +269,34 @@ def parse_recent_fills(payload):
         price = _num(_first(row, "filled_price", "filledPrice", "avg_filled_price", "average_price"))
         if not symbol or not side or ts is None:
             continue
+        order_id = str(_first(row, "client_order_id", "clientOrderId", "order_id", "orderId") or "")
         out.append({
             "symbol": symbol,
             "side": side,
             "ts": ts,
             "shares": shares,
             "price": price,
+            "order_id": order_id,
         })
     return out
 
 
 def day_lots(rows):
-    return [
-        {
+    lots = []
+    for row in rows or []:
+        if not row.get("shares") or row.get("price") is None or row.get("ts") is None:
+            continue
+        lot = {
             "symbol": row["symbol"],
             "side": row["side"],
             "shares": row["shares"],
             "price": row["price"],
             "ts": row["ts"],
         }
-        for row in rows or []
-        if row.get("shares") and row.get("price") is not None and row.get("ts") is not None
-    ]
+        if row.get("order_id"):
+            lot["order_id"] = row["order_id"]
+        lots.append(lot)
+    return lots
 
 
 def recent_fill_line(rows):
