@@ -64,11 +64,23 @@
     }
     .pillar.active { background: #1C1C1C; border-color: #60A5FA; }
     .pillar .row { display: flex; justify-content: space-between; align-items: center; }
+    .pillar .sym-wrap { display: flex; align-items: center; gap: 6px; }
     .pillar .sym { font-weight: 700; }
     .pillar .chg.up { color: #1FC08A; }
     .pillar .chg.down { color: #F2495C; }
     .pillar .px { font-size: 11px; color: #C4B5FD; }
-    .pillar .x { border: 0; background: transparent; color: #737373; cursor: pointer; font: inherit; }
+    .pillar .x {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #737373;
+      cursor: pointer;
+      line-height: 1;
+      user-select: none;
+    }
+    .pillar .x:hover { color: #F2495C; }
     .pillar { min-height: 58px; }
     .pillar-add {
       color: #A3A3A3;
@@ -562,10 +574,31 @@
     btn.dataset.symbol = name;
     const row = document.createElement('span');
     row.className = 'row';
+    const wrap = document.createElement('span');
+    wrap.className = 'sym-wrap';
     const sym = document.createElement('span');
     sym.className = 'sym';
     sym.textContent = name;
-    row.append(sym);
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.tabIndex = 0;
+    x.setAttribute('role', 'button');
+    x.setAttribute('aria-label', `Remove ${name}`);
+    const blocked = openPositionSymbol === name;
+    if (blocked) x.title = 'Open position — close it before removing';
+    const onRemove = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!blocked) removePillar(name);
+    };
+    x.addEventListener('mousedown', event => event.stopPropagation());
+    x.addEventListener('click', onRemove);
+    x.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') onRemove(event);
+    });
+    wrap.append(sym, x);
+    row.append(wrap);
     const cached = pillarQuotes[name];
     if (cached && Number.isFinite(cached.day_change_pct)) {
       const chg = document.createElement('span');
@@ -590,18 +623,6 @@
     hours.textContent = '—';
     hours.style.color = '#737373';
     sub.append(hours);
-    sub.append(document.createTextNode(' '));
-    const x = document.createElement('button');
-    x.type = 'button';
-    x.className = 'x';
-    x.textContent = '×';
-    const blocked = openPositionSymbol === name;
-    if (blocked) x.title = 'Open position — close it before removing';
-    x.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (!blocked) removePillar(name);
-    });
-    sub.append(x);
     btn.append(sub);
     if (cached?.daily_resistance && Number.isFinite(cached.daily_resistance.price)) {
       const daily = document.createElement('span');
@@ -610,7 +631,10 @@
       daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · ${cached.daily_resistance.label || ('+' + cached.daily_resistance.pct + '%')}`;
       btn.append(daily);
     }
-    btn.addEventListener('click', () => selectSymbol(name));
+    btn.addEventListener('click', (event) => {
+      if (event.target.closest('.x')) return;
+      selectSymbol(name);
+    });
     return btn;
   }
 
