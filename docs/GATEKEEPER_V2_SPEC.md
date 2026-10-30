@@ -110,7 +110,7 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 
 | Row | Dot | Source |
 | --- | --- | --- |
-| Gospel | MACD positive | Ross's videos, per Kevin; citation to add |
+| Gospel | MACD positive | Histogram above 0 (MACD line above its signal line). Ross's videos, per Kevin; citation to add |
 | Gospel | No high-volume sell | Red bar volume above the buying (green) bars' volume, or a large red candle. Ross's videos, per Kevin; final bars only |
 | Gospel | Resistance | PDF criterion 2: no nearby resistance |
 | Gospel | Front side | Web page: higher highs and higher lows, early in the breakout |
@@ -121,6 +121,16 @@ Below the pillar table, the v1 layout stays: a verdict banner, rule dots, bearis
 | Context | Support | MY OWN (v1) |
 
 Context dots render grey with values and never affect the verdict. The verdict reads ALIGNED or NOT ALIGNED and lists only failing Gospel checks. Every dot's hover names its source.
+
+**Notes rules (revised 2026-10-30).**
+
+- Every note is BEAR, NEUTRAL or BULL, never two at once for the same bar.
+- Tape slowdown is NEUTRAL ("consolidation"), not bearish or bullish.
+- Price below VWAP is a BEAR note, never a verdict check.
+- Topping and bottoming tails need a meaningful bar: wick at least 50% of the bar's range, and the range at least 1.5× the median range of the last 10 bars. Topping tails count only within 2% of the session high; a doji is not a tail.
+- One line per event, latest occurrence only, newest first.
+
+**Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with six Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
 
 Rows marked v1 are summaries. The v1 code's existing definitions and thresholds are the source of truth; port them exactly and change behavior only where this spec says so (the MACD seeding fix).
 
