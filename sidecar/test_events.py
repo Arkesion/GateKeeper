@@ -9,6 +9,7 @@ from events import (
     find_account,
     history_bounds,
     mask_display,
+    mask_event,
     parse_account_list,
     parse_order_event,
     parse_positions,
@@ -100,10 +101,70 @@ class ParseEventsTest(unittest.TestCase):
                 },
             ]
         }))
-        self.assertEqual(line, "recent fill count=1 last=TNMG BUY 2026-10-30T15:11:00Z")
+        self.assertEqual(line, "recent fill count=1 last=TNMG BUY 2026-10-30 11:11 ET")
         self.assertNotIn("4.20", line)
         self.assertNotIn("ord-secret", line)
         self.assertEqual(recent_fill_line([]), "recent fill count=0 last=none")
+
+    def test_grouped_history_names_the_purr_sell(self):
+        line = recent_fill_line(parse_recent_fills({
+            "data": [
+                {
+                    "client_order_id": "secret-buy",
+                    "orders": [{
+                        "symbol": "PURR",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "instrument_type": "EQUITY",
+                        "filled_quantity": "1",
+                        "filled_price": "12.22",
+                        "filled_time": 1793290926884,
+                        "client_order_id": "secret-buy",
+                    }],
+                },
+                {
+                    "client_order_id": "secret-sell",
+                    "orders": [{
+                        "symbol": "PURR",
+                        "side": "SELL",
+                        "status": "FILLED",
+                        "instrument_type": "EQUITY",
+                        "filled_quantity": "1",
+                        "filled_price": "12.18",
+                        "filled_time": 1793290965286,
+                        "order_id": "secret-sell",
+                    }],
+                },
+                {
+                    "orders": [{
+                        "symbol": "PURR",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "instrument_type": "OPTION",
+                        "filled_quantity": "1",
+                        "filled_price": "1.00",
+                        "filled_time": 1793290999999,
+                    }],
+                },
+            ]
+        }))
+        self.assertEqual(line, "recent fill count=2 last=PURR SELL 2026-10-29 12:22 ET")
+        self.assertNotIn("secret", line)
+        self.assertNotIn("12.18", line)
+
+    def test_buy_event_shape_masks_ids(self):
+        masked = mask_event({
+            "client_order_id": "secret-buy",
+            "symbol": "PURR",
+            "side": "BUY",
+            "status": "FILLED",
+            "filled_quantity": "1",
+            "filled_price": "12.22",
+        })
+        self.assertEqual(masked["client_order_id"], "****")
+        self.assertEqual(masked["symbol"], "PURR")
+        self.assertEqual(masked["side"], "BUY")
+        self.assertEqual(masked["filled_price"], "12.22")
 
     def test_history_window_uses_a_z_suffix(self):
         start, end = history_bounds(datetime(2026, 10, 30, 20, 10, 4, tzinfo=timezone.utc))

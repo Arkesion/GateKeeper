@@ -215,26 +215,118 @@ def _history_rows(payload):
     return []
 
 
-def parse_recent_fills(payload):
+def _order_rows(payload):
     out = []
     for row in _history_rows(payload):
+        nested = row.get("orders")
+        if isinstance(nested, list):
+            out.extend(item for item in nested if isinstance(item, dict))
+            continue
+        out.append(row)
+    return out
+
+
+def _epoch_ms(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number * 1000 if number < 10000000000 else number
+    text = str(value).strip()
+    if text.isdigit():
+        number = int(text)
+        return number * 1000 if number < 10000000000 else number
+    from datetime import datetime, timezone
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
+def format_et(ms):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    moment = datetime.fromtimestamp(ms / 1000, ZoneInfo("America/New_York"))
+    return moment.strftime("%Y-%m-%d %H:%M ET")
+
+
+def parse_recent_fills(payload):
+    out = []
+    for row in _order_rows(payload):
+        kind = str(_first(row, "instrument_type", "instrumentType") or "EQUITY").upper()
+        if kind != "EQUITY":
+            continue
         status = str(_first(row, "order_status", "orderStatus", "status") or "").upper().replace(" ", "_")
         if status not in FILLED:
             continue
         symbol = str(_first(row, "symbol", "ticker") or "").upper()
         side = _side(_first(row, "side", "order_side", "orderSide"))
-        when = _first(row, "filled_time", "filledTime", "place_time", "create_time", "createTime")
-        if not symbol or not side or not when:
+        ts = _epoch_ms(_first(row, "filled_time", "filledTime", "place_time", "create_time", "createTime"))
+        shares = _num(_first(row, "filled_quantity", "filledQuantity", "filled_qty", "quantity"))
+        price = _num(_first(row, "filled_price", "filledPrice", "avg_filled_price", "average_price"))
+        if not symbol or not side or ts is None:
             continue
-        out.append({"symbol": symbol, "side": side, "time": str(when)})
+        out.append({
+            "symbol": symbol,
+            "side": side,
+            "ts": ts,
+            "shares": shares,
+            "price": price,
+        })
     return out
+
+
+def day_lots(rows):
+    return [
+        {
+            "symbol": row["symbol"],
+            "side": row["side"],
+            "shares": row["shares"],
+            "price": row["price"],
+            "ts": row["ts"],
+        }
+        for row in rows or []
+        if row.get("shares") and row.get("price") is not None and row.get("ts") is not None
+    ]
 
 
 def recent_fill_line(rows):
     if not rows:
         return "recent fill count=0 last=none"
-    last = max(rows, key=lambda row: row["time"])
-    return f"recent fill count={len(rows)} last={last['symbol']} {last['side']} {last['time']}"
+    last = max(rows, key=lambda row: row["ts"])
+    return f"recent fill count={len(rows)} last={last['symbol']} {last['side']} {format_et(last['ts'])}"
+
+
+def _id_key(key):
+    text = str(key or "").lower()
+    if "token" in text or "account" in text or "signature" in text:
+        return True
+    return text.endswith("id")
+
+
+def mask_event(payload):
+    if isinstance(payload, list):
+        return [mask_event(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+    out = {}
+    for key, value in payload.items():
+        out[key] = "****" if _id_key(key) else mask_event(value)
+    return out
+
+
+def looks_like_buy(payload):
+    if isinstance(payload, list):
+        return any(looks_like_buy(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+    if _side(_first(payload, "side", "order_side", "orderSide")) == "BUY":
+        return True
+    nested = payload.get("order") or payload.get("orders") or payload.get("data")
+    return looks_like_buy(nested)
 
 
 class QuietTradeEvents:
@@ -333,15 +425,26 @@ def read_recent_fills(reader, account_id, now=None):
     from webull_data import response_json
     moment = now or datetime.now(timezone.utc)
     start, end = history_bounds(moment)
-    request = OrderHistoryRequestV2()
-    request.set_account_id(account_id)
-    request.set_start_time(start)
-    request.set_end_time(end)
-    response = reader.client.get_response(request)
-    status = _http_status(response)
-    if status not in (None, 200):
-        return None, status
-    return parse_recent_fills(response_json(response)), status or 200
+    rows = []
+    page_key = None
+    status = 200
+    for _ in range(5):
+        request = OrderHistoryRequestV2()
+        request.set_account_id(account_id)
+        request.set_start_time(start)
+        request.set_end_time(end)
+        if page_key:
+            request.set_pagination_key(page_key)
+        response = reader.client.get_response(request)
+        status = _http_status(response)
+        if status not in (None, 200):
+            return None, status
+        payload = response_json(response)
+        rows.extend(parse_recent_fills(payload))
+        page_key = payload.get("pagination_key") if isinstance(payload, dict) else None
+        if not page_key:
+            break
+    return rows, status or 200
 
 
 def run_account(stop_event, redis_client, token_dir, account_id):
@@ -384,27 +487,43 @@ def run_account(stop_event, redis_client, token_dir, account_id):
         redis_client.set("gk:account", json.dumps(watch))
 
     publish()
-    try:
-        fills, status = read_recent_fills(reader, account_id)
+    last_fill_line = {"text": None}
+    last_history = {"at": 0.0}
+
+    def refresh_history():
+        try:
+            fills, status = read_recent_fills(reader, account_id)
+        except Exception as exc:
+            code = getattr(exc, "error_code", None)
+            http = getattr(exc, "http_status", None)
+            if http or code:
+                LOG.info("recent fills failed: %s %s", http, code)
+            else:
+                LOG.info("recent fills failed: %s", type(exc).__name__)
+            return
         if fills is None:
             LOG.info("recent fills failed: %s", status)
-        else:
-            LOG.info("%s", recent_fill_line(fills))
-    except Exception as exc:
-        code = getattr(exc, "error_code", None)
-        http = getattr(exc, "http_status", None)
-        if http or code:
-            LOG.info("recent fills failed: %s %s", http, code)
-        else:
-            LOG.info("recent fills failed: %s", type(exc).__name__)
+            return
+        line = recent_fill_line(fills)
+        if line != last_fill_line["text"]:
+            LOG.info("%s", line)
+            last_fill_line["text"] = line
+        redis_client.set("gk:day_fills", json.dumps(day_lots(fills)))
+
+    refresh_history()
+    last_history["at"] = time.monotonic()
 
     seen = set()
+    shape_logged = {"done": False}
 
     def on_message(event_type, _subscribe_type, payload, _raw):
         try:
             kind = int(event_type)
         except (TypeError, ValueError):
             return
+        if kind == ORDER_EVENT and not shape_logged["done"] and looks_like_buy(payload):
+            LOG.info("order event shape %s", json.dumps(mask_event(payload), separators=(",", ":")))
+            shape_logged["done"] = True
         if kind == ORDER_EVENT:
             for fill in parse_order_event(payload):
                 if fill["id"] in seen:
@@ -454,6 +573,9 @@ def run_account(stop_event, redis_client, token_dir, account_id):
     announced = False
     last_heartbeat = 0
     while not stop_event.is_set():
+        if time.monotonic() - last_history["at"] >= 60:
+            refresh_history()
+            last_history["at"] = time.monotonic()
         try:
             if reader is None:
                 reader = make_account_reader(token_dir)

@@ -15,6 +15,8 @@ const {
   isScratch,
   loadSession,
   nextSessionStart,
+  priorSessionLine,
+  rebuildFromFills,
   reconcilePositions,
   saveSession,
   viewOf
@@ -228,6 +230,60 @@ test('an account that is not ok does not open a trade', () => {
   }, opts);
   assert.equal(view.position, null);
   assert.equal(view.account.status, 'unconfigured');
+});
+
+const CLRO = [
+  { symbol: 'CLRO', side: 'BUY', shares: 1, price: 4.74, ts: 1793021848382 },
+  { symbol: 'CLRO', side: 'SELL', shares: 1, price: 4.49, ts: 1793022175611 },
+  { symbol: 'CLRO', side: 'BUY', shares: 1, price: 4.89, ts: 1793022191713 },
+  { symbol: 'CLRO', side: 'SELL', shares: 1, price: 4.88, ts: 1793022312799 },
+  { symbol: 'CLRO', side: 'BUY', shares: 1, price: 5.07, ts: 1793022383365 },
+  { symbol: 'CLRO', side: 'SELL', shares: 1, price: 4.90, ts: 1793022411499 }
+];
+
+const PURR = [
+  { symbol: 'PURR', side: 'BUY', shares: 1, price: 12.22, ts: 1793290926884 },
+  { symbol: 'PURR', side: 'SELL', shares: 1, price: 12.18, ts: 1793290965286 }
+];
+
+test('Oct 29 PURR is one loser and no lockout', () => {
+  const opts = tempOpts();
+  const now = utcFromEtDateTime('2026-10-29', 16, 0);
+  const session = loadSession(now, opts);
+  session.open = { symbol: 'TNMG', shares: 1, stop: 1 };
+  session.realized_r = 1.5;
+  const rebuilt = rebuildFromFills(session, PURR, now, opts);
+  assert.equal(rebuilt.changed, true);
+  assert.equal(session.realized_usd, -0.04);
+  assert.equal(session.trades, 1);
+  assert.equal(session.streak, 1);
+  assert.equal(session.realized_r, 0);
+  assert.equal(session.lockout_until, null);
+  assert.equal(session.open.symbol, 'TNMG');
+  assert.equal(fs.existsSync(opts.tradeLog), false);
+  assert.equal(rebuildFromFills(session, PURR, now, opts).changed, false);
+  assert.match(rebuilt.line, /session rebuild 2026-10-29 realized 0\.00 -> -0\.04 trades 0 -> 1 streak 0 -> 1/);
+});
+
+test('Oct 26 CLRO locks after three losers and the lock is gone on Oct 30', () => {
+  const opts = tempOpts();
+  const during = utcFromEtDateTime('2026-10-26', 16, 0);
+  const session = loadSession(during, opts);
+  const rebuilt = rebuildFromFills(session, CLRO, during, opts);
+  assert.equal(rebuilt.changed, true);
+  assert.equal(session.realized_usd, -0.43);
+  assert.equal(session.trades, 3);
+  assert.equal(session.streak, 3);
+  assert.equal(session.lockout_reason, 'losers');
+  assert.equal(session.lockout_until, utcFromEtDateTime('2026-10-27', 4, 0));
+  const later = loadSession(utcFromEtDateTime('2026-10-30', 16, 0), opts);
+  const quiet = rebuildFromFills(later, CLRO, utcFromEtDateTime('2026-10-30', 16, 0), opts);
+  assert.equal(quiet.changed, false);
+  assert.equal(later.realized_usd, 0);
+  assert.equal(later.streak, 0);
+  assert.equal(later.lockout_until, null);
+  const line = priorSessionLine(PURR, utcFromEtDateTime('2026-10-30', 16, 0), opts);
+  assert.equal(line, 'session 2026-10-29 realized=-0.04 trades=1 streak=1 lockout=none');
 });
 
 test('failing checks are the red chips only', () => {
