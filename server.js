@@ -155,6 +155,15 @@ registerRoutes(app, {
   ),
   getLastSuccessfulFetch: () => store.lastSuccessfulFetch,
   getRateLimitStatus: () => store.rateLimitStatus,
+  getAccountStatus: () => {
+    if (config.marketDataProvider !== 'webull') return null;
+    try {
+      const status = getProvider().accountSnapshot?.status;
+      return status ? { status } : null;
+    } catch {
+      return null;
+    }
+  },
   getStreamStatus: async () => {
     if (config.marketDataProvider !== 'webull') return null;
     const provider = getProvider();

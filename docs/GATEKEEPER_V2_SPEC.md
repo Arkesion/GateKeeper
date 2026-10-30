@@ -179,7 +179,7 @@ Every transition is one line in the signal log: time, ticker, from, to, trigger,
 
 A BUY that opens or adds to a position on any symbol switches the rail to in-trade. If that symbol is not already a pillar tab, Gatekeeper adds it and selects it. When the position goes flat, one JSON line is appended to the trade log on the data volume and the rail returns to pre-trade. There is no `?trade=1` toggle. The live fill is what turns the mode on.
 
-**Fill detection.** The sidecar subscribes with the official SDK gRPC client (`TradeEventsClient.do_subscribe`) and handles order events and position events. Option events on that same stream are ignored. This is not a second MQTT session. Positions are polled every 10 seconds with a read of the account position list, only as a fallback when an event is missed. Fills and positions are published to Redis. The account is `WEBULL_ACCOUNT_ID` in the server environment. The cash account for that variable is `CVU7R6E8`. The id is not hardcoded in source.
+**Fill detection.** The sidecar subscribes with the official SDK gRPC client (`TradeEventsClient.do_subscribe`) and handles order events and position events. Option events on that same stream are ignored. This is not a second MQTT session. Positions are polled every 10 seconds with a read of the account position list, only as a fallback when an event is missed. Fills and positions are published to Redis. The account is `WEBULL_ACCOUNT_ID` in the server environment. That value is the account id from the account list, not the display number. At startup the sidecar finds that id, logs the display number masked and the account type, and does not use another account. If the variable is unset, the rail says `no account configured`. If the id is not in the list, the rail says `ACCOUNT NOT FOUND` and in-trade stays off. The id is not hardcoded in source.
 
 **Entry.** Entry is the average fill price across partial fills and adds. Shares are the position size. Dollar P&L is `(last − average) × shares`. R P&L uses that average against the frozen R below.
 
@@ -217,7 +217,7 @@ Worked example, entry $5.60, pullback low $5.37:
 
 A loser is realized P&L below zero. A scratch, absolute P&L under 1 cent per share, neither counts as a loser nor resets the streak (MY OWN). While a position is below its stop, STOP HIT is the overlay on screen. After the position is flat, a day lock remains until 4:00 AM ET. The session row shows realized dollars, losers as `N of 3`, and the max loss still left.
 
-Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists behind `GK_INJECT_FILLS` and is refused in production, so the lockouts can be tested without a trade. Exit warnings stay Phase 6.
+Gatekeeper places, modifies, and cancels no orders. The stop on the rail is a number. The order, if you want one, is entered in Webull. A dev-only fill injector exists only when `GK_INJECT_FILLS=1` and `NODE_ENV` is exactly `development`. An unset `NODE_ENV` refuses it. Corpus sets `NODE_ENV=production`. The injector exists so the lockouts can be tested without a trade. Exit warnings stay Phase 6.
 
 ## Exit warnings
 

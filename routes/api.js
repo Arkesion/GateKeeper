@@ -40,7 +40,8 @@ module.exports = function registerRoutes(app, deps) {
         quote: QUOTE_POLL_MS,
         candles: CANDLE_POLL_MS,
         frontend_state: config.frontendStatePollMs
-      }
+      },
+      account: typeof deps.getAccountStatus === 'function' ? deps.getAccountStatus() : null
     });
   });
 
@@ -54,6 +55,39 @@ module.exports = function registerRoutes(app, deps) {
     } catch (err) {
       return res.status(503).json({ ok: false, error: 'redis down' });
     }
+  });
+
+  app.post('/api/dev/fill', (req, res) => {
+    const { injectAllowed, applyFill, loadSession, saveSession, viewOf } = require('../lib/trades');
+    if (!injectAllowed()) return res.status(404).json({ ok: false });
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      let body = {};
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+      } catch {
+        return res.status(400).json({ ok: false });
+      }
+      const now = Date.now();
+      const session = loadSession(now);
+      applyFill(session, {
+        id: body.id || `dev-${now}`,
+        symbol: String(body.symbol || '').toUpperCase(),
+        side: String(body.side || 'BUY').toUpperCase(),
+        shares: Number(body.shares),
+        price: Number(body.price),
+        ts: now
+      }, {
+        symbol: String(body.symbol || '').toUpperCase(),
+        now,
+        setup: { state: body.setup_state || null, pullback_low: body.pullback_low },
+        lastBarLow: body.last_bar_low,
+        failing: Array.isArray(body.failing) ? body.failing : []
+      });
+      saveSession(session);
+      return res.json(viewOf(session, Number(body.price), now));
+    });
   });
 
   app.get('/api/status', (req, res) => {

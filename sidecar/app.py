@@ -86,8 +86,19 @@ class Sidecar:
         threading.Thread(target=self._mqtt_loop, name="mqtt", daemon=True).start()
         threading.Thread(target=self._rate_loop, name="rate", daemon=True).start()
         threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True).start()
+        self._start_account()
         LOG.info("sidecar ready http=%s mqtt=%s", http_host, mqtt_host)
         self._commands()
+
+    def _start_account(self):
+        account = os.environ.get("WEBULL_ACCOUNT_ID", "").strip()
+        from events import run_account
+        threading.Thread(
+            target=run_account,
+            args=(self.stop, self.redis, self.token_dir, account),
+            name="account",
+            daemon=True,
+        ).start()
 
     def _mqtt_loop(self):
         attempt = 0

@@ -29,14 +29,16 @@
       overflow: hidden;
     }
     #app.feed-dim { opacity: 0.45; }
-    body.trade #pillars,
     body.trade #verdict,
     body.trade #setup,
     body.trade #events { display: none; }
     body:not(.trade) #position,
     body:not(.trade) #path,
-    body:not(.trade) #exits,
-    body:not(.trade) #risk { display: none; }
+    body:not(.trade) #exits { display: none; }
+    body:not(.trade):not(.risk) #risk { display: none; }
+    #app.lock-dim { opacity: 0.45; }
+    .account-note { font-size: 12px; letter-spacing: 0.08em; color: #A3A3A3; }
+    .account-note.bad { color: #F2495C; }
 
     #pillars {
       position: relative;
@@ -304,6 +306,8 @@
     #overlay-rate { background: rgba(0, 0, 0, 0.88); }
     #overlay-waiting { background: rgba(0, 0, 0, 0.72); }
     #overlay-invalid { background: rgba(0, 0, 0, 0.88); }
+    #overlay-stop { background: rgba(180, 20, 30, 0.42); }
+    #overlay-done { background: rgba(0, 0, 0, 0.55); }
     #reclaim-btn, #reauth-btn {
       color: #EDEDED;
       background: #1C1C1C;
@@ -328,6 +332,7 @@
     </span>
     <span id="live-age"><span class="live">LIVE</span></span>
   </header>
+  <p id="account-note" class="account-note" hidden></p>
 
   <section id="verdict" aria-label="Alignment">
     <div class="banner-row">
@@ -384,8 +389,8 @@
 
   <section id="risk" class="stats" aria-label="Session risk">
     <div class="box"><div class="k">REALIZED</div><div class="v" id="risk-realized">—</div></div>
-    <div class="box"><div class="k">LOSERS</div><div class="v">0 of 3</div></div>
-    <div class="box"><div class="k">MAX LOSS LEFT</div><div class="v">—</div></div>
+    <div class="box"><div class="k">LOSERS</div><div class="v" id="risk-losers">0 of 3</div></div>
+    <div class="box"><div class="k">MAX LOSS LEFT</div><div class="v" id="risk-left">—</div></div>
   </section>
 </div>
 
@@ -398,6 +403,8 @@
   <div class="overlay" id="overlay-auth"><div class="overlay-title">AUTH FAILED — re-login</div><a id="reauth-btn" href="/api/login" target="_blank">Re-authenticate</a></div>
   <div class="overlay" id="overlay-rate"><div class="overlay-title">RATE LIMITED — backing off</div></div>
   <div class="overlay" id="overlay-invalid"><div class="overlay-title">UNKNOWN SYMBOL</div><div class="overlay-sub" id="overlay-invalid-sub"></div></div>
+  <div class="overlay" id="overlay-stop"><div class="overlay-title">STOP HIT · YOU ARE STILL IN</div></div>
+  <div class="overlay" id="overlay-done"><div class="overlay-title">DONE FOR THE DAY</div></div>
 </div>
 
 <script>
@@ -408,17 +415,13 @@
   const DISCONNECT_MS = 60000;
   const UNREACHABLE_MS = 3000;
   const STATE_FETCH_MS = 3000;
-  const TRADE = new URLSearchParams(location.search).get('trade') === '1';
   const ZOOM = 0.12;
   const EDGE = 0.02;
-
-  if (TRADE) document.body.classList.add('trade');
 
   let pillars = [];
   let symbol = '';
   let quote = null;
   let view = null;
-  let tradeEntry = null;
   let stateTimer = null;
   let healthTimer = null;
   let overlayTimer = null;
@@ -616,7 +619,6 @@
     symbol = next || '';
     quote = null;
     view = null;
-    tradeEntry = null;
     savePillars();
     document.getElementById('header-symbol').textContent = symbol || '—';
     document.getElementById('header-price').textContent = '';
@@ -938,8 +940,19 @@
       Number.isFinite(price) ? Math.floor((price - 1e-6) / step) * step : null,
       Number.isFinite(price) ? Math.ceil((price + 1e-6) / step) * step : null
     ];
-    if (trade) zoomLevels.push(trade.stop, trade.target);
-    const box = zoomFor(price, zoomLevels);
+    if (trade && trade.r > 0) {
+      const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
+      zoomLevels.push(trade.stop, trade.entry, basis + trade.r, basis + 2 * trade.r, basis + 3 * trade.r);
+    }
+    let box = zoomFor(price, zoomLevels);
+    if (trade && trade.r > 0 && box) {
+      const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
+      const wantLo = Math.min(trade.stop, price) - 0.02;
+      const wantHi = basis + 3 * trade.r + 0.02;
+      if (wantHi - wantLo <= 0.60) {
+        box = { lo: Math.min(box.lo, wantLo), hi: Math.max(box.hi, wantHi) };
+      }
+    }
     document.getElementById('ladder-range').textContent = trade
       ? 'structure left · your levels right'
       : (box ? `${money(box.lo)} – ${money(box.hi)} · auto-zoom` : '');
@@ -1012,7 +1025,7 @@
       const red = document.createElement('div');
       red.className = 'band';
       red.style.background = 'rgba(242,73,92,0.35)';
-      const top = yOf(trade.target, box, height);
+      const top = yOf(trade.basis + 3 * trade.r, box, height);
       const entryY = yOf(trade.entry, box, height);
       const stopY = yOf(trade.stop, box, height);
       green.style.top = `${Math.min(top, entryY)}px`;
@@ -1023,7 +1036,7 @@
     }
     const rows = [];
     const gap = 16 * (box.hi - box.lo) / height;
-    const sameEntry = trade && Math.abs(price - trade.entry) <= 0.01;
+    const sameEntry = trade && Math.abs(price - trade.entry) < 0.005;
     const setup = data.setup;
     const showPlan = setup && (setup.state === 'ARMED' || setup.state === 'TRIGGERED');
     const beside = [];
@@ -1098,17 +1111,22 @@
       quoteVal.style.fontSize = '11px';
     }
     if (trade) {
+      const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
       const rights = [
-        ['3R', trade.target, '#1FC08A'],
-        ['2R', trade.entry + 2 * trade.r, '#1FC08A'],
-        ['1R', trade.entry + trade.r, '#1FC08A'],
+        ['3R', basis + 3 * trade.r, '#1FC08A'],
+        ['2R', basis + 2 * trade.r, '#1FC08A'],
+        ['1R', basis + trade.r, '#1FC08A'],
         ['ENTRY', trade.entry, '#EDEDED'],
         ['STOP', trade.stop, '#F2495C']
       ];
       for (const [label, level, color] of rights) {
         if (sameEntry && label === 'ENTRY') continue;
         if (!Number.isFinite(level) || level > box.hi || level < box.lo) continue;
-        rows.push({ y: yOf(level, box, height), el: rung(0, '', `<span style="display:block;height:1px;background:${color};opacity:0.7"></span>`, `${label} ${px(level)}`, color) });
+        rows.push({
+          y: yOf(level, box, height),
+          plan: true,
+          el: rung(0, '', `<span style="display:block;height:1px;background:${color};opacity:0.7"></span>`, `${label} ${px(level)}`, color)
+        });
       }
     }
     rows.sort((a, b) => a.y - b.y);
@@ -1155,44 +1173,64 @@
   }
 
   function tradePlan(data) {
-    const price = data.context?.price;
-    if (!Number.isFinite(tradeEntry) && Number.isFinite(price)) tradeEntry = price;
-    const entry = tradeEntry;
-    const pullback = data.giveback?.pullback_low;
-    const stop = Math.max(
-      Number.isFinite(pullback) ? pullback - 0.01 : -Infinity,
-      Number.isFinite(entry) ? entry - 0.20 : -Infinity
-    );
-    const r = Number.isFinite(entry) && Number.isFinite(stop) ? entry - stop : null;
+    const pos = data.position;
+    if (!pos || pos.symbol !== symbol) return null;
+    if (!Number.isFinite(pos.entry) || !Number.isFinite(pos.stop) || !(pos.r > 0)) return null;
+    const basis = Number.isFinite(pos.frozen_entry) ? pos.frozen_entry : pos.entry;
     return {
-      entry,
-      stop: Number.isFinite(stop) ? stop : null,
-      r: Number.isFinite(r) && r > 0 ? r : null,
-      target: Number.isFinite(r) && r > 0 ? entry + 3 * r : null,
-      pullback
+      entry: pos.entry,
+      basis,
+      stop: pos.stop,
+      r: pos.r,
+      shares: pos.shares,
+      pullback: pos.pullback_low,
+      source: pos.pullback_source
     };
+  }
+
+  function renderAccount(status) {
+    const note = document.getElementById('account-note');
+    if (!note) return;
+    if (status === 'unconfigured') {
+      note.hidden = false;
+      note.className = 'account-note';
+      note.textContent = 'no account configured';
+    } else if (status === 'not_found') {
+      note.hidden = false;
+      note.className = 'account-note bad';
+      note.textContent = 'ACCOUNT NOT FOUND';
+    } else if (status === 'ok') {
+      note.hidden = true;
+      note.textContent = '';
+    }
+  }
+
+  function moneySigned(value) {
+    if (!Number.isFinite(value)) return '—';
+    const up = value >= 0;
+    return `${up ? '+' : '−'}$${Math.abs(value).toFixed(2)}`;
   }
 
   function renderTrade(data, plan) {
     const price = data.context?.price;
-    const pnl = Number.isFinite(price) && Number.isFinite(plan.entry) ? price - plan.entry : null;
-    const rMult = Number.isFinite(pnl) && Number.isFinite(plan.r) && plan.r > 0 ? pnl / plan.r : null;
+    const shares = Number.isFinite(plan.shares) ? plan.shares : 0;
+    const pnl = Number.isFinite(price) && Number.isFinite(plan.entry) ? (price - plan.entry) * shares : null;
+    const rMult = Number.isFinite(price) && Number.isFinite(plan.entry) && plan.r > 0 ? (price - plan.entry) / plan.r : null;
     const pnlEl = document.getElementById('position-pnl');
     if (Number.isFinite(pnl) && Number.isFinite(rMult)) {
       const up = pnl >= 0;
       pnlEl.className = up ? 'up' : 'down';
-      pnlEl.textContent = `${up ? '+' : '−'}$${Math.abs(pnl).toFixed(2)} · ${up ? '+' : '−'}${Math.abs(rMult).toFixed(2)}R`;
+      pnlEl.textContent = `${moneySigned(pnl)} · ${up ? '+' : '−'}${Math.abs(rMult).toFixed(2)}R`;
     } else pnlEl.textContent = '';
-    document.getElementById('entry-label').textContent = 'ENTRY · 1 sh';
+    const shareLabel = Number.isInteger(shares) ? String(shares) : String(shares);
+    document.getElementById('entry-label').textContent = `ENTRY · ${shareLabel} sh`;
     document.getElementById('entry-px').textContent = px(plan.entry);
     document.getElementById('stop-px').textContent = px(plan.stop);
     document.getElementById('r-px').textContent = Number.isFinite(plan.r) ? plan.r.toFixed(2) : '—';
     const pb = Number.isFinite(plan.pullback) ? px(plan.pullback) : '—';
+    const rebuilt = plan.source === 'rebuilt' ? ' · stop rebuilt' : '';
     document.getElementById('stop-note').textContent =
-      `stop = max(pullback low ${pb} − 1¢, entry − 20¢) · sample position`;
-    document.getElementById('risk-realized').textContent = Number.isFinite(pnl)
-      ? `${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl).toFixed(2)}`
-      : '—';
+      `stop = max(pullback low ${pb} − 1¢, entry − 20¢)${rebuilt}`;
 
     const ctx = data.context || {};
     const structure = [
@@ -1207,9 +1245,10 @@
       '1R and 2R': [],
       '2R and 3R': []
     };
-    if (Number.isFinite(plan.entry) && Number.isFinite(plan.target) && plan.r > 0) {
+    const pathTop = plan.basis + 3 * plan.r;
+    if (Number.isFinite(plan.entry) && Number.isFinite(pathTop) && plan.r > 0) {
       for (const [label, level] of structure) {
-        if (!Number.isFinite(level) || level <= plan.entry || level >= plan.target) continue;
+        if (!Number.isFinite(level) || level <= plan.entry || level >= pathTop) continue;
         const dist = (level - plan.entry) / plan.r;
         const band = dist < 1 ? 'entry and 1R' : dist < 2 ? '1R and 2R' : '2R and 3R';
         const name = label === 'VWAP' ? 'VWAP' : label.toLowerCase();
@@ -1228,7 +1267,7 @@
       ? sentences.join('. ') + '.'
       : 'No structure between entry and 3R.';
 
-    const oneR = Number.isFinite(plan.entry) && Number.isFinite(plan.r) ? plan.entry + plan.r : null;
+    const oneR = Number.isFinite(plan.basis) && Number.isFinite(plan.r) ? plan.basis + plan.r : null;
     const away = Number.isFinite(oneR) && Number.isFinite(price) ? oneR - price : null;
     const tail = (data.notes || []).find(note => note.text === 'Topping tail');
     const lost = Number.isFinite(price) && Number.isFinite(ctx.ema9_1m_value) && price < ctx.ema9_1m_value;
@@ -1275,9 +1314,53 @@
     renderVerdict(data);
     renderSetup(data);
     renderNotes(data.notes, data.events_stale);
-    const plan = TRADE ? tradePlan(data) : null;
+    renderAccount(data.account?.status);
+    if (data.account?.status === 'ok' || !data.account?.status) adoptPosition(data.position);
+    const plan = tradePlan(data);
+    document.body.classList.toggle('trade', Boolean(plan));
+    const dayLock = data.session?.lockout === 'day';
+    const sessionRisk = dayLock || (data.session && (data.session.realized_usd !== 0 || data.session.streak > 0));
+    document.body.classList.toggle('risk', Boolean(plan) || sessionRisk);
+    renderRisk(data.session);
     if (plan) renderTrade(data, plan);
     renderLadder(data, plan && Number.isFinite(plan.r) ? plan : null);
+    const stopHit = data.stop_hit === true;
+    document.getElementById('overlay-stop').classList.toggle('overlay-active', stopHit);
+    document.getElementById('overlay-done').classList.toggle('overlay-active', !stopHit && dayLock);
+    document.getElementById('app').classList.toggle('lock-dim', stopHit || dayLock);
+  }
+
+  function adoptPosition(position) {
+    const sym = position?.symbol;
+    if (!sym || sym === symbol) return;
+    if (!pillars.includes(sym)) {
+      while (pillars.length >= 3) {
+        const drop = pillars.find(name => name !== sym);
+        if (!drop) break;
+        pillars = pillars.filter(name => name !== drop);
+      }
+      pillars.push(sym);
+      savePillars();
+    }
+    selectSymbol(sym);
+  }
+
+  function renderRisk(session) {
+    const realized = document.getElementById('risk-realized');
+    const losers = document.getElementById('risk-losers');
+    const left = document.getElementById('risk-left');
+    if (!session) {
+      realized.textContent = '—';
+      losers.textContent = '0 of 3';
+      left.textContent = '—';
+      return;
+    }
+    realized.textContent = moneySigned(session.realized_usd || 0);
+    realized.style.color = (session.realized_usd || 0) < 0 ? '#F2495C' : '#1FC08A';
+    losers.textContent = `${session.streak || 0} of 3`;
+    if (session.max_loss_unit === 'USD') left.textContent = money(session.max_loss_left);
+    else if (Number.isFinite(session.max_loss_left)) left.textContent = `${session.max_loss_left.toFixed(1)}R`;
+    else left.textContent = '—';
   }
 
   function formatWaitingSub(missing, detail) {
@@ -1406,6 +1489,7 @@
       healthData = data;
       if (data.stream === 'stream_taken') feedTaken = true;
       else if (data.stream === 'streaming') feedTaken = false;
+      renderAccount(data.account?.status);
       updateOverlays();
     } catch { /* keep last health */ }
   }

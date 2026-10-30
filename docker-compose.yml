@@ -13,6 +13,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - WEBULL_TOKEN_DIR=/tmp/webull-tokens
+      - NODE_ENV=production
     depends_on:
       - redis
 
@@ -30,6 +31,7 @@ services:
       - TOKEN_PATH=/data/tokens.json
       - PUBLIC_URL=https://gatekeeper.veilforge.org
       - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
     depends_on:
       - redis
       - webull-sidecar
