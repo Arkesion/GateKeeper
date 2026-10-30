@@ -3,8 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { calcVWAP } = require('../lib/indicators');
+const { calcVWAP, getCompleted1mBars } = require('../lib/indicators');
 const { trafficBanner } = require('../lib/signals');
 const {
   isHighVolumeSellBar,
@@ -29,6 +30,8 @@ const {
   latestHvSellTime,
   latestLargeSellTime
 } = require('../lib/signals');
+const { buildSession1mBars, buildIndicator1mBars, sessionLow } = require('../lib/session');
+const { eventsAreStale, logSignalState, resetSignalLog } = require('../lib/state');
 
 const fixture = JSON.parse(fs.readFileSync(
   path.join(__dirname, 'fixtures/tnmg-2026-10-30.json'),
@@ -340,4 +343,86 @@ test('price pill keeps one level name and counts the rest', () => {
   assert.equal(pill.label, 'PRICE · Resistance · Pivot +3');
   assert.equal(pill.title, 'Resistance · Pivot · VWAP · 9 EMA · Pivot');
   assert.equal(pricePillLabel([], false).label, 'PRICE');
+});
+
+test('a post-halt topping tail under the gap floor still reaches the note, the chip, and the log', () => {
+  const start = Date.parse('2026-10-30T17:30:00.000Z');
+  const bars = [];
+  for (let i = 0; i < 26; i++) {
+    bars.push({
+      datetime: start + i * 60000,
+      open: 4.50, high: 4.60, low: 4.40, close: 4.55, volume: 1000
+    });
+  }
+  for (let i = 30; i < 45; i++) {
+    bars.push({
+      datetime: start + i * 60000,
+      open: 3.80, high: 3.84, low: 3.78, close: 3.80, volume: 1000
+    });
+  }
+  const tailAt = start + 45 * 60000;
+  bars.push({
+    datetime: tailAt,
+    open: 3.78, high: 4.00, low: 3.66, close: 3.70, volume: 1000
+  });
+  bars.push({
+    datetime: start + 46 * 60000,
+    open: 3.70, high: 3.74, low: 3.66, close: 3.72, volume: 1000
+  });
+  const now = start + 55 * 60000;
+  const quote = { closePrice: 3, lastPrice: 4 };
+  const session = buildSession1mBars([bars], quote, now);
+  const indicator = buildIndicator1mBars([bars], quote, now);
+  assert.equal(session[session.length - 1].datetime, start + 25 * 60000);
+  assert.ok(indicator.some(bar => bar.datetime === tailAt));
+  const completed = getCompleted1mBars(indicator, now);
+  const notes = buildNotes(completed, {});
+  const tailNote = notes.find(note => note.text === 'Topping tail');
+  assert.equal(tailNote.time, formatChartHm(tailAt));
+  const chip = activeEvent(completed, isToppingTailBar, now, bar => bar.high);
+  assert.equal(chip.time, formatChartHm(tailAt));
+  const logPath = path.join(os.tmpdir(), `gk-signal-${process.pid}.log`);
+  fs.writeFileSync(logPath, '');
+  const previous = process.env.SIGNAL_LOG;
+  process.env.SIGNAL_LOG = logPath;
+  resetSignalLog();
+  try {
+    logSignalState('TNMG', {
+      front_side: {
+        macd: true,
+        spread_ok: true,
+        topping_tail_phase: chip.phase,
+        topping_tail_time: chip.time
+      },
+      notes,
+      setup: { state: 'IDLE', reason: 'test' },
+      giveback: {}
+    }, 'NOT ALIGNED');
+  } finally {
+    if (previous == null) delete process.env.SIGNAL_LOG;
+    else process.env.SIGNAL_LOG = previous;
+    resetSignalLog();
+  }
+  const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const chart = formatChartHm(tailAt);
+  assert.ok(lines.some(row => row.kind === 'note' && row.text === 'Topping tail' && row.time === chart));
+  assert.ok(lines.some(row => row.kind === 'chip' && row.name === 'tail' && row.time === chart));
+  fs.unlinkSync(logPath);
+});
+
+test('events are stale only when the note bar lags the indicator bar by more than two minutes', () => {
+  const start = Date.parse('2026-10-30T17:30:00.000Z');
+  assert.equal(eventsAreStale(start, start + 3 * 60000), true);
+  assert.equal(eventsAreStale(start, start + 2 * 60000), false);
+  assert.equal(eventsAreStale(start, start), false);
+});
+
+test('a 2.95 low on the 4:00 series stays 2.95 beside a 3.00 bar', () => {
+  const open = Date.parse('2026-10-30T08:00:00.000Z');
+  const low = sessionLow([
+    { datetime: open, open: 3.10, high: 3.20, low: 3.05, close: 3.12, volume: 1000 },
+    { datetime: open + (3 * 60 + 1) * 60000, open: 3.05, high: 3.10, low: 2.95, close: 3.02, volume: 1000 },
+    { datetime: open + 4 * 60 * 60000, open: 3.02, high: 3.08, low: 3.00, close: 3.04, volume: 1000 }
+  ]);
+  assert.equal(low, 2.95);
 });
