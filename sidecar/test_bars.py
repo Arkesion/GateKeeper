@@ -64,5 +64,25 @@ class QuoteBookTest(unittest.TestCase):
         self.assertEqual(book_top(SimpleNamespace(bids=[], asks=[])), (None, None))
 
 
+class MissingMinuteTest(unittest.TestCase):
+    def test_official_bar_fills_a_minute_the_builder_skipped(self):
+        builder = MinuteBarBuilder()
+        builder.on_print(4.13, 100, at(13, 16, 30), "RTH")
+        builder.on_print(4.00, 100, at(13, 22, 10), "RTH")
+        skipped = {
+            "datetime": at(13, 21, 0),
+            "open": 4.05,
+            "high": 4.09,
+            "low": 3.95,
+            "close": 4.00,
+            "volume": 119012,
+        }
+        changed = builder.upsert_official([skipped])
+        self.assertEqual(len(changed), 1)
+        minutes = [label(bar["datetime"]) for bar in builder.closed]
+        self.assertEqual(minutes, ["13:16", "13:21"])
+        self.assertEqual(label(builder.forming["datetime"]), "13:22")
+
+
 if __name__ == "__main__":
     unittest.main()

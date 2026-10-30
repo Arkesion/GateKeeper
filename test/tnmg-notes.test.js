@@ -8,12 +8,14 @@ const { calcVWAP } = require('../lib/indicators');
 const { trafficBanner } = require('../lib/signals');
 const {
   isHighVolumeSellBar,
+  isHighVolumeBuyBar,
   isBullishBar,
   isBearishBar,
   isToppingTailBar,
   formatEtHm,
   formatChartHm,
   pricePillLabel,
+  computeGivebackSignal,
   macdGospelPositive,
   buildNotes,
   relativeVolume,
@@ -246,6 +248,46 @@ test('chart label is the 12:20 start bar plus one minute', () => {
   assert.equal(bar.volume, 78594);
   assert.equal(bar.high, 3.6);
   assert.equal(formatChartHm(bar.datetime), '12:21');
+});
+
+test('a near-zero giveback leg does not print a huge percent', () => {
+  const start = Date.parse('2026-10-30T18:00:00Z');
+  const tiny = [
+    { datetime: start, open: 4.00, high: 4.01, low: 4.00, close: 4.01, volume: 1000 },
+    { datetime: start + 60000, open: 4.01, high: 4.02, low: 4.01, close: 4.02, volume: 1000 }
+  ];
+  const small = computeGivebackSignal(tiny, 3.50);
+  assert.equal(small.pct, null);
+  assert.equal(small.state, 'green');
+  assert.equal(small.phase, 'move_too_small');
+  const leg = [
+    { datetime: start, open: 4.00, high: 4.10, low: 4.00, close: 4.08, volume: 1000 },
+    { datetime: start + 60000, open: 4.08, high: 4.12, low: 4.05, close: 4.11, volume: 1000 }
+  ];
+  const dumped = computeGivebackSignal(leg, 3.11);
+  assert.equal(dumped.pct, 100);
+  assert.equal(dumped.state, 'red');
+  const none = computeGivebackSignal([
+    { datetime: start, open: 4.10, high: 4.12, low: 4.00, close: 4.02, volume: 1000 }
+  ], 4.02);
+  assert.equal(none.pct, null);
+  assert.equal(none.state, 'red');
+});
+
+test('the 13:57 buy and the 14:10 sell are events when those bars are present', () => {
+  // HTTP bars, TNMG 2026-10-30, from the 13:47 start through the 14:10 start.
+  // Chart times are one minute later. A four-minute halt ends at the 13:16 start bar.
+  const bars = [{"datetime":1793382420000,"open":3.7136,"high":3.7136,"low":3.68,"close":3.6901,"volume":24186},{"datetime":1793382480000,"open":3.6902,"high":3.72,"low":3.68,"close":3.7143,"volume":10191},{"datetime":1793382540000,"open":3.7002,"high":3.74,"low":3.7001,"close":3.73,"volume":26478},{"datetime":1793382600000,"open":3.73,"high":3.77,"low":3.72,"close":3.77,"volume":18835},{"datetime":1793382660000,"open":3.76,"high":3.89,"low":3.71,"close":3.72,"volume":113159},{"datetime":1793382720000,"open":3.729,"high":3.75,"low":3.7,"close":3.72,"volume":44734},{"datetime":1793382780000,"open":3.735,"high":3.7499,"low":3.7,"close":3.7186,"volume":16879},{"datetime":1793382840000,"open":3.715,"high":3.7798,"low":3.715,"close":3.77,"volume":42265},{"datetime":1793382900000,"open":3.75,"high":3.88,"low":3.75,"close":3.8683,"volume":75585},{"datetime":1793382960000,"open":3.86,"high":4.02,"low":3.83,"close":3.99,"volume":246138},{"datetime":1793383020000,"open":3.995,"high":4.04,"low":3.9,"close":3.96,"volume":237191},{"datetime":1793383080000,"open":3.96,"high":4.012,"low":3.94,"close":3.9535,"volume":118597},{"datetime":1793383140000,"open":3.94,"high":3.94,"low":3.87,"close":3.92,"volume":109081},{"datetime":1793383200000,"open":3.9267,"high":3.95,"low":3.84,"close":3.8787,"volume":74820},{"datetime":1793383260000,"open":3.88,"high":3.9,"low":3.86,"close":3.8801,"volume":28950},{"datetime":1793383320000,"open":3.885,"high":4.01,"low":3.86,"close":3.985,"volume":148011},{"datetime":1793383380000,"open":3.9801,"high":4.1,"low":3.94,"close":3.9599,"volume":167885},{"datetime":1793383440000,"open":3.97,"high":4.045,"low":3.959,"close":4.015,"volume":88877},{"datetime":1793383500000,"open":4.011,"high":4.07,"low":3.96,"close":3.965,"volume":135672},{"datetime":1793383560000,"open":3.96,"high":4,"low":3.88,"close":3.89,"volume":114607},{"datetime":1793383620000,"open":3.8999,"high":3.92,"low":3.8635,"close":3.89,"volume":63571},{"datetime":1793383680000,"open":3.88,"high":3.92,"low":3.8601,"close":3.89,"volume":31591},{"datetime":1793383740000,"open":3.89,"high":3.89,"low":3.71,"close":3.829,"volume":230678},{"datetime":1793383800000,"open":3.8101,"high":3.8499,"low":3.8,"close":3.8035,"volume":35125}];
+  const buy = bars.find(bar => bar.volume === 246138);
+  const sell = bars.find(bar => bar.volume === 230678);
+  assert.equal(formatChartHm(buy.datetime), '13:57');
+  assert.equal(isHighVolumeBuyBar(buy, bars), true);
+  assert.equal(formatChartHm(sell.datetime), '14:10');
+  assert.equal(isHighVolumeSellBar(sell, bars), true);
+  const notes = buildNotes(bars, {});
+  assert.equal(notes.find(note => note.text === 'Large buy volume').time, '13:57');
+  assert.equal(notes.find(note => note.text === 'High-volume sell').time, '14:10');
+  assert.ok(notes[0].time > '13:16');
 });
 
 test('price pill keeps one level name and counts the rest', () => {

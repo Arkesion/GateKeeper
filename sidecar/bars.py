@@ -286,23 +286,29 @@ class MinuteBarBuilder:
         return bool(self.upsert_official([dict(bar, datetime=int(minute_ms))]))
 
     def upsert_official(self, bars):
-        """Write HTTP bars over closed minutes. Skip a bar whose OHLCV already matches
-        and is already final. Returns the bars that were written.
+        """Write HTTP bars over closed minutes, and insert a minute the builder skipped.
+        A minute at or after the forming bar is left alone. Skip a bar whose OHLCV
+        already matches and is already final. Returns the bars that were written.
         """
         changed = []
+        forming_ms = self.forming["datetime"] if self.forming else None
         for bar in bars:
             minute = int(bar["datetime"])
+            if forming_ms is not None and minute >= forming_ms:
+                continue
             official = dict(bar)
             official["datetime"] = minute
             official["provisional"] = False
-            for index, row in enumerate(self.closed):
-                if row["datetime"] != minute:
-                    continue
-                if row.get("provisional") is False and ohlcv_equal(row, official):
-                    break
-                self.closed[index] = official
+            index = next((i for i, row in enumerate(self.closed) if row["datetime"] == minute), None)
+            if index is None:
+                self.closed.append(official)
                 changed.append(official)
-                break
+                continue
+            if self.closed[index].get("provisional") is False and ohlcv_equal(self.closed[index], official):
+                continue
+            self.closed[index] = official
+            changed.append(official)
+        self.closed.sort(key=lambda row: row["datetime"])
         return changed
 
 

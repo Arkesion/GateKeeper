@@ -677,7 +677,9 @@
         front?.reason
       ),
       chip(
-        `${gb?.state === 'green' ? '✓ ' : gb?.state === 'yellow' ? '! ' : '✕ '}Giveback${Number.isFinite(gb?.pct) ? ' ' + Math.round(gb.pct) + '%' : ''}`,
+        Number.isFinite(gb?.pct)
+          ? `${gb.state === 'green' ? '✓ ' : gb.state === 'yellow' ? '! ' : '✕ '}Giveback ${Math.round(gb.pct)}%`
+          : 'Giveback —',
         toneOf(gb?.state),
         gb?.reason
       ),
