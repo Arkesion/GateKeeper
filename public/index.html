@@ -103,6 +103,8 @@
     }
     .head-left { display: flex; align-items: baseline; gap: 12px; }
     #header-price { font-size: 22px; font-weight: 700; }
+    #header-daily { font-size: 12px; color: #737373; }
+    #header-daily.near { color: #FBBF24; }
     #live-age { text-align: right; font-size: 11px; color: #A3A3A3; line-height: 1.6; }
     #live-age .live { color: #1FC08A; }
 
@@ -142,18 +144,20 @@
     #fail-count { font-size: 12px; }
     #chips {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 5px;
       font-size: 12px;
     }
-    .chip { padding: 5px 8px; border-radius: 5px; }
+    #chips .chip { grid-column: span 3; }
+    #chips .chip:nth-child(n + 5) { grid-column: span 4; }
+    .chip { padding: 5px 8px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .chip.ok { background: rgba(31, 192, 138, 0.14); color: #1FC08A; }
     .chip.bad { background: rgba(242, 73, 92, 0.16); color: #F2495C; }
     .chip.warn { background: rgba(251, 191, 36, 0.14); color: #FBBF24; }
     .chip.idle { background: #1C1C1C; color: #737373; }
 
     .kicker { font-size: 11px; letter-spacing: 0.18em; color: #A3A3A3; }
-    #ladder { padding: 10px 12px; gap: 6px; flex: 1; min-height: 0; }
+    #ladder { padding: 10px 12px; gap: 6px; flex: 1; min-height: 0; overflow: hidden; }
     #ladder-caption { display: flex; justify-content: space-between; font-size: 11px; color: #A3A3A3; }
     .edge {
       text-align: center;
@@ -164,7 +168,7 @@
       border-radius: 5px;
       white-space: pre-line;
     }
-    #plot { position: relative; flex: 1; min-height: 240px; }
+    #plot { position: relative; flex: 1; min-height: 0; overflow: hidden; }
     #spine {
       position: absolute;
       left: 50%;
@@ -302,6 +306,7 @@
     <span class="head-left">
       <h1 id="header-symbol">—</h1>
       <span id="header-price"></span>
+      <span id="header-daily"></span>
     </span>
     <span id="live-age"><span class="live">LIVE</span></span>
   </header>
@@ -428,7 +433,8 @@
       price: ctx.price,
       day_change_pct: ctx.day_change_pct,
       rvol: ctx.rvol,
-      rvol_color: ctx.rvol_color
+      rvol_color: ctx.rvol_color,
+      daily_resistance: ctx.daily_resistance || null
     };
   }
 
@@ -530,6 +536,13 @@
         sub.append(x);
       }
       btn.append(sub);
+      if (cached?.daily_resistance && Number.isFinite(cached.daily_resistance.price)) {
+        const daily = document.createElement('span');
+        daily.className = 'px';
+        daily.style.color = cached.daily_resistance.near ? '#FBBF24' : '#737373';
+        daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · +${cached.daily_resistance.pct}%`;
+        btn.append(daily);
+      }
       btn.addEventListener('click', () => selectSymbol(name));
       nav.append(btn);
     }
@@ -588,6 +601,7 @@
     savePillars();
     document.getElementById('header-symbol').textContent = symbol || '—';
     document.getElementById('header-price').textContent = '';
+    document.getElementById('header-daily').textContent = '';
     renderPillars();
     resetDisplay();
     if (symbol) startStatePolling();
@@ -624,23 +638,41 @@
     title.textContent = aligned ? 'ALIGNED' : 'NOT ALIGNED';
     title.className = 'banner ' + (aligned ? 'ok' : 'bad');
     const fs = data.front_side || {};
-    const res = data.level_signals?.resistance;
     const front = data.momentum?.front_side;
     const gb = data.giveback;
     const spread = data.context?.bid_ask_spread;
+    const hist = data.context?.macd_histogram_value;
     const hints = data.context?.calc_hints?.dots || {};
+    const histText = Number.isFinite(hist)
+      ? `${hist < 0 ? '−' : ''}${Math.abs(hist).toFixed(2)}`
+      : '';
     const hvFail = fs.no_hv_sell === false
       ? `✕ HV sell${fs.hv_sell_time ? ' ' + fs.hv_sell_time : ''}`
       : `${mark(fs.no_hv_sell)}No HV sell`;
-    const dailyFail = res?.state === 'red' && Number.isFinite(res.level_price)
-      ? `✕ Daily res. ${px(res.level_price)} +${res.distance_pct}%`
-      : '✓ Daily clear';
+    const bigFail = fs.no_big_red === false
+      ? `✕ Big red${fs.big_red_time ? ' ' + fs.big_red_time : ''}`
+      : `${mark(fs.no_big_red)}No big red`;
+    const tailWhen = fs.topping_tail_time ? ' ' + fs.topping_tail_time : '';
+    const tailFail = fs.no_topping_tail === false
+      ? `✕ Tail${tailWhen}`
+      : `${mark(fs.no_topping_tail)}No topping tail`;
+    const macdHint = hints.macd || 'Histogram above 0 (MACD line above its signal line).';
+    const tailHint = hints.no_topping_tail || 'Topping tail in the last 3 closed bars, cleared if a later bar closes above its high.';
     const items = [
-      chip(fs.macd === false ? '✕ MACD down' : `${mark(fs.macd)}MACD`, toneOf(fs.macd), hints.macd || 'Histogram above 0 (MACD line above its signal line).'),
-      chip(hvFail, toneOf(fs.no_hv_sell), hints.no_hv_sell),
-      chip(dailyFail, toneOf(res?.state === 'red' ? 'red' : 'green'), res?.reason || hints.resistance),
       chip(
-        front?.state === 'red' ? `✕ ${front.reason || 'Front side'}` : `${front?.state === 'yellow' ? '! ' : '✓ '}Front side`,
+        fs.macd === false ? `✕ MACD ${histText}` : `${mark(fs.macd)}MACD`,
+        toneOf(fs.macd),
+        fs.macd === false ? `MACD histogram ${histText}. ${macdHint}` : macdHint
+      ),
+      chip(hvFail, toneOf(fs.no_hv_sell), hints.no_hv_sell),
+      chip(bigFail, toneOf(fs.no_big_red), hints.no_big_red),
+      chip(
+        tailFail,
+        toneOf(fs.no_topping_tail),
+        fs.no_topping_tail === false ? `Topping tail${tailWhen}. ${tailHint}` : tailHint
+      ),
+      chip(
+        front?.state === 'red' ? '✕ Choppy' : `${front?.state === 'yellow' ? '! ' : '✓ '}Front side`,
         toneOf(front?.state),
         front?.reason
       ),
@@ -660,12 +692,13 @@
     const failing = [
       fs.macd === false,
       fs.no_hv_sell === false,
-      res?.state === 'red',
+      fs.no_big_red === false,
+      fs.no_topping_tail === false,
       front?.state === 'red',
       gb?.state === 'red',
       fs.spread_ok === false
     ].filter(Boolean).length;
-    count.textContent = failing ? `${failing} of 6 failing` : '6 of 6';
+    count.textContent = failing ? `${failing} of 7 failing` : '7 of 7';
     count.className = failing ? 'bad' : 'ok';
     const box = document.getElementById('chips');
     box.replaceChildren(...items);
@@ -773,7 +806,6 @@
     const plot = document.getElementById('plot');
     const price = data.context?.price;
     const ctx = data.context || {};
-    const height = plot.clientHeight || 280;
     let box = zoomFor(price);
     if (trade && Number.isFinite(trade.stop) && Number.isFinite(trade.target)) {
       view = null;
@@ -825,7 +857,8 @@
     const spine = document.createElement('div');
     spine.id = 'spine';
     plot.replaceChildren(spine);
-    if (!box || !Number.isFinite(price)) return;
+    const height = plot.clientHeight;
+    if (!box || !Number.isFinite(price) || height < 1) return;
     if (trade) {
       const green = document.createElement('div');
       green.className = 'band';
@@ -875,6 +908,12 @@
     pill.className = 'price-pill';
     pill.textContent = px(price);
     priceRow.querySelector('.name').style.fontWeight = '700';
+    const quoteVal = priceRow.querySelector('.val');
+    if (Number.isFinite(ctx.bid) && Number.isFinite(ctx.ask)) {
+      quoteVal.textContent = `${px(ctx.bid)} × ${px(ctx.ask)}`;
+      quoteVal.style.color = '#A3A3A3';
+      quoteVal.style.fontSize = '11px';
+    }
     if (trade) {
       const rights = [
         ['3R', trade.target, '#1FC08A'],
@@ -1018,6 +1057,15 @@
     rememberQuote(symbol, ctx);
     document.getElementById('header-symbol').textContent = symbol;
     document.getElementById('header-price').textContent = money(ctx.price);
+    const daily = document.getElementById('header-daily');
+    const info = ctx.daily_resistance;
+    if (info && Number.isFinite(info.price)) {
+      daily.textContent = `Daily res. ${px(info.price)} · +${info.pct}%`;
+      daily.className = info.near ? 'near' : '';
+    } else {
+      daily.textContent = '';
+      daily.className = '';
+    }
     const age = Number.isFinite(lastPrintAtMs) ? formatAgo(lastPrintAtMs) : (lastSuccessAt ? formatAgo(lastSuccessAt) : '');
     document.getElementById('live-age').innerHTML = `<span class="live">LIVE${age ? ' · ' + age : ''}</span>`;
     renderPillars();

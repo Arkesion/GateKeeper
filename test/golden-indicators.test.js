@@ -9,7 +9,7 @@ const {
   calcMACDExactTOS,
   calcVWAP
 } = require('../lib/indicators');
-const { trafficBanner, isHighVolumeSellBar } = require('../lib/signals');
+const { trafficBanner, isHighVolumeSellBar, isLargeSellCandleBar } = require('../lib/signals');
 
 function etParts(ms) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -160,6 +160,8 @@ function gospelBanner(front, supportState) {
       macd: true,
       vwap: true,
       no_hv_sell: true,
+      no_big_red: true,
+      no_topping_tail: true,
       spread_ok: true,
       ...front
     },
@@ -180,7 +182,7 @@ test('ALIGNED ignores VWAP, EMA, and support', () => {
   assert.equal(gospelBanner({ macd: false }, 'green'), 'NOT_ALIGNED');
 });
 
-test('HV sell is red volume above the green bars or a 2x body', () => {
+test('HV sell is red volume; a large body is the separate candle check', () => {
   const bars = [];
   let t = Date.parse('2026-10-28T13:30:00Z');
   for (let i = 0; i < 10; i++) {
@@ -192,5 +194,6 @@ test('HV sell is red volume above the green bars or a 2x body', () => {
   const quiet = { datetime: t, open: 1.01, high: 1.02, low: 0.99, close: 1.00, volume: 50 };
   assert.equal(isHighVolumeSellBar(quiet, [...bars, quiet]), false);
   const wide = { datetime: t, open: 1.05, high: 1.06, low: 0.90, close: 0.90, volume: 50 };
-  assert.equal(isHighVolumeSellBar(wide, [...bars, wide]), true);
+  assert.equal(isHighVolumeSellBar(wide, [...bars, wide]), false);
+  assert.equal(isLargeSellCandleBar(wide, [...bars, wide]), true);
 });

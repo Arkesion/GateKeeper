@@ -17,7 +17,11 @@ const {
   relativeVolume,
   rvolColor,
   computeResistanceSignal,
-  computeFrontSideSignal
+  computeFrontSideSignal,
+  activeToppingTail,
+  isLargeSellCandleBar,
+  latestHvSellTime,
+  latestLargeSellTime
 } = require('../lib/signals');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -103,8 +107,8 @@ test('notes are one side each, one bar each, and do not change ALIGNED', () => {
   assert.equal(pause.side, 'NEUTRAL');
   assert.equal(quiet.filter(note => note.text === 'Below 9/20 EMA').length, 1);
   assert.equal(trafficBanner(
-    { macd: true, no_hv_sell: true, spread_ok: true, emas: false, vwap: false },
-    { resistance: { state: 'green', phase: 'clear' } },
+    { macd: true, no_hv_sell: true, no_big_red: true, no_topping_tail: true, spread_ok: true },
+    { resistance: { state: 'red', phase: 'near' } },
     { front_side: { state: 'green' } },
     { state: 'green' }
   ), 'ALIGNED');
@@ -191,4 +195,35 @@ test('VWAP anchor sweep at 09:56 is reported and does not change the formula', (
   for (const row of scored) {
     console.log(`tnmg vwap ${row.label} ${row.vwap.toFixed(4)} delta=${row.delta.toFixed(4)}`);
   }
+});
+
+test('topping tail chip cites 09:41 through 09:44 and clears once 09:44 has closed', () => {
+  function closedBefore(hm) {
+    return bars.filter(bar => bar.datetime < barAt(hm).datetime);
+  }
+  for (const hm of ['09:42', '09:43', '09:44']) {
+    const hit = activeToppingTail(closedBefore(hm));
+    assert.equal(formatEtHm(hit.datetime), '09:41', hm);
+  }
+  assert.equal(activeToppingTail(closedBefore('09:45')), null);
+});
+
+test('11:10 volume and body chips cite that bar separately', () => {
+  const recorded = [
+    { open: 3.225, high: 3.269, low: 3.2202, close: 3.26, volume: 48458 },
+    { open: 3.259, high: 3.27, low: 3.18, close: 3.2101, volume: 76643 },
+    { open: 3.2201, high: 3.235, low: 3.1901, close: 3.2301, volume: 31275 },
+    { open: 3.22, high: 3.2601, low: 3.205, close: 3.2099, volume: 28391 },
+    { open: 3.21, high: 3.215, low: 3.19, close: 3.2101, volume: 26491 },
+    { open: 3.20, high: 3.24, low: 3.15, close: 3.17, volume: 98815 }
+  ];
+  const start = Date.parse('2026-10-30T15:05:00.000Z');
+  const series = recorded.map((bar, index) => ({ ...bar, datetime: start + index * 60000 }));
+  const sell = series[series.length - 1];
+  const now = sell.datetime + 30000;
+  assert.equal(formatEtHm(sell.datetime), '11:10');
+  assert.equal(isHighVolumeSellBar(sell, series), true);
+  assert.equal(isLargeSellCandleBar(sell, series), true);
+  assert.equal(latestHvSellTime(series, now), '11:10');
+  assert.equal(latestLargeSellTime(series, now), '11:10');
 });
