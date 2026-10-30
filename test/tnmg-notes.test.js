@@ -106,6 +106,20 @@ test('notes are one side each, one bar each, and do not change ALIGNED', () => {
   ), 'ALIGNED');
 });
 
+test('TNMG notes name the tail, the support hold, and the large buy', () => {
+  const supportBar = barAt('09:52');
+  const notes = buildNotes(bars, { support: supportBar.low });
+  const tail = notes.find(note => note.text === 'Topping tail');
+  const held = notes.find(note => note.text.startsWith('Held support'));
+  const buy = notes.find(note => note.text === 'Large buy volume');
+  assert.equal(tail && tail.side, 'BEAR');
+  assert.equal(tail && tail.time, '09:41');
+  assert.equal(buy && buy.side, 'BULL');
+  assert.equal(buy && buy.time, '10:02');
+  assert.equal(held && held.side, 'BULL');
+  assert.equal(held && held.time, '10:15');
+});
+
 test('VWAP anchor sweep at 09:56 is reported and does not change the formula', () => {
   const end = barAt('09:56');
   const through = bars.filter(bar => bar.datetime <= end.datetime);

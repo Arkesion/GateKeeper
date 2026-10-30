@@ -127,7 +127,7 @@ Context dots render grey with values and never affect the verdict. The verdict r
 - Every note is BEAR, NEUTRAL or BULL, never two at once for the same bar.
 - Tape slowdown is NEUTRAL ("consolidation"), not bearish or bullish.
 - Price below VWAP is a BEAR note, never a verdict check.
-- Topping and bottoming tails need a meaningful bar: wick at least 50% of the bar's range, and the range at least 1.5× the median range of the last 10 bars. Topping tails count only within 2% of the session high; a doji is not a tail.
+- Topping and bottoming tails need a meaningful bar: wick at least 50% of the bar's range, and the range at least 1.5× the median range of the last 10 bars. A topping tail's high is within 2% of the highest high of the last 15 bars; a bottoming tail's low is within 2% of the lowest low of those bars. A doji is not a tail.
 - One line per event, latest occurrence only, newest first.
 
 **Layout (revised 2026-10-30): D · Ladder rail.** One vertical column, about 600 px wide, black theme matching Webull. Top to bottom: pillar tabs (up to 3 tickers), ticker header with price and live status, verdict with six Gospel chips, an auto-zoomed price ladder, the setup state, and the last 3 events. In trade, the same ladder shows structure levels on the left and entry, stop, 1R–3R on the right, plus an "in your path" callout naming any level between entry and 3R. Each number appears in exactly one place.
