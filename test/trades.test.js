@@ -365,6 +365,59 @@ test('schwab market data still books a webull fill and a lockout', () => {
   noteAccount(null);
 });
 
+test('the Nov 2 CLRO fill stays open until the 6.42 sell', () => {
+  const opts = tempOpts();
+  const buyTs = Date.parse('2026-11-02T14:12:47.860Z');
+  const sellTs = Date.parse('2026-11-02T14:14:59.521Z');
+  const lots = [
+    {
+      symbol: 'CLRO', side: 'BUY', shares: 1, price: 6.39, ts: buyTs,
+      order_id: 'S9H49IJFIT584LMEJHP0O6R4C9'
+    },
+    {
+      symbol: 'CLRO', side: 'SELL', shares: 1, price: 6.42, ts: sellTs,
+      order_id: '37IIT78KPAKD610HQ67VOF4IE8'
+    }
+  ];
+  const open = applyMarket({
+    symbol: 'CLRO',
+    price: 6.39,
+    now: buyTs + 7000,
+    lastBarLow: 6.16,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'CLRO', shares: 1, average: 6.39 }],
+      fills: [],
+      dayFills: null
+    }
+  }, opts);
+  assert.equal(open.position.symbol, 'CLRO');
+  assert.equal(open.position.entry, 6.39);
+
+  const held = applyMarket({
+    symbol: 'CLRO',
+    price: 6.38,
+    now: sellTs,
+    account: { status: 'ok', positions: [], fills: [], dayFills: null }
+  }, opts);
+  assert.equal(held.position.symbol, 'CLRO');
+  assert.equal(fs.existsSync(opts.tradeLog), false);
+
+  const closed = applyMarket({
+    symbol: 'CLRO',
+    price: 6.38,
+    now: sellTs + 1000,
+    account: { status: 'ok', positions: [], fills: [], dayFills: lots }
+  }, opts);
+  assert.equal(closed.position, null);
+  assert.equal(closed.session.realized_usd, 0.03);
+  const row = JSON.parse(fs.readFileSync(opts.tradeLog, 'utf8').trim());
+  assert.equal(row.exit, 6.42);
+  assert.equal(row.realized_usd, 0.03);
+  assert.ok(row.order_ids.includes('S9H49IJFIT584LMEJHP0O6R4C9'));
+  assert.ok(row.order_ids.includes('37IIT78KPAKD610HQ67VOF4IE8'));
+});
+
 test('failing checks are the red chips only', () => {
   assert.deepEqual(failingChecks(
     { macd: false, no_hv_sell: true, no_big_red: true, no_topping_tail: false, spread_ok: true },

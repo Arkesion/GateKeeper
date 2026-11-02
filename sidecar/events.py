@@ -10,6 +10,7 @@ LOG = logging.getLogger("gatekeeper.sidecar")
 ORDER_EVENT = 1024
 POSITION_EVENT = 1028
 FILLED = {"FILLED", "PARTIAL_FILLED", "PARTIALLY_FILLED"}
+PLACED = {"NEW", "SUBMITTED", "PENDING", "WORKING", "PENDING_SUBMIT"}
 
 
 def _num(value):
@@ -324,6 +325,47 @@ def mask_event(payload):
     return out
 
 
+def _payload_keys(payload):
+    if isinstance(payload, dict):
+        return sorted(str(key) for key in payload.keys())
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return sorted(str(key) for key in item.keys())
+    return []
+
+
+def _order_body(payload):
+    if isinstance(payload, list):
+        for item in payload:
+            body = _order_body(item)
+            if body:
+                return body
+        return None
+    if not isinstance(payload, dict):
+        return None
+    inner = payload.get("order") or payload.get("data") or payload
+    if isinstance(inner, list):
+        return _order_body(inner)
+    return inner if isinstance(inner, dict) else None
+
+
+def order_event_line(payload):
+    """A non-fill order event, as one log line. Fills return None."""
+    body = _order_body(payload)
+    if not body:
+        return None
+    status = str(_first(body, "order_status", "orderStatus", "status") or "").upper().replace(" ", "_")
+    symbol = str(_first(body, "symbol", "ticker") or "").upper() or "unknown"
+    if not status or status in FILLED:
+        return None
+    if status in PLACED:
+        return f"order event placed {symbol}"
+    if "CANCEL" in status:
+        return f"order event cancelled {symbol}"
+    return f"order event status={status} symbol={symbol}"
+
+
 def looks_like_buy(payload):
     if isinstance(payload, list):
         return any(looks_like_buy(item) for item in payload)
@@ -367,14 +409,24 @@ def _quiet_request(self, app_key, app_secret, accounts):
     return request, metadata
 
 
+def _grpc_channel_options():
+    return [
+        ("grpc.keepalive_time_ms", 30000),
+        ("grpc.keepalive_timeout_ms", 10000),
+        ("grpc.keepalive_permit_without_calls", 1),
+        ("grpc.http2.max_pings_without_data", 0),
+    ]
+
+
 def _quiet_subscribe(self, accounts):
     import grpc
     from webull.trade.events import events_pb2_grpc as pb_grpc
     target = self._host + ":" + str(self._port)
+    options = _grpc_channel_options()
     if self._tls_enable:
-        channel = grpc.secure_channel(target, grpc.ssl_channel_credentials())
+        channel = grpc.secure_channel(target, grpc.ssl_channel_credentials(), options)
     else:
-        channel = grpc.insecure_channel(target)
+        channel = grpc.insecure_channel(target, options)
     with channel:
         stub = pb_grpc.EventServiceStub(channel)
         self._stream_processing(stub, accounts)
@@ -494,44 +546,62 @@ def run_account(stop_event, redis_client, token_dir, account_id):
 
     publish()
     last_fill_line = {"text": None}
-    last_history = {"at": 0.0}
 
-    def refresh_history():
-        try:
-            fills, status = read_recent_fills(reader, account_id)
-        except Exception as exc:
-            code = getattr(exc, "error_code", None)
-            http = getattr(exc, "http_status", None)
-            if http or code:
-                LOG.info("recent fills failed: %s %s", http, code)
+    def history_loop():
+        history_reader = None
+        while not stop_event.is_set():
+            try:
+                if history_reader is None:
+                    history_reader = make_account_reader(token_dir)
+                fills, status = read_recent_fills(history_reader, account_id)
+            except Exception as exc:
+                code = getattr(exc, "error_code", None)
+                http = getattr(exc, "http_status", None)
+                if http or code:
+                    LOG.info("recent fills failed: %s %s", http, code)
+                else:
+                    LOG.info("recent fills failed: %s", type(exc).__name__)
+                history_reader = None
             else:
-                LOG.info("recent fills failed: %s", type(exc).__name__)
-            return
-        if fills is None:
-            LOG.info("recent fills failed: %s", status)
-            return
-        line = recent_fill_line(fills)
-        if line != last_fill_line["text"]:
-            LOG.info("%s", line)
-            last_fill_line["text"] = line
-        redis_client.set("gk:day_fills", json.dumps(day_lots(fills)))
+                if fills is None:
+                    LOG.info("recent fills failed: %s", status)
+                else:
+                    line = recent_fill_line(fills)
+                    if line != last_fill_line["text"]:
+                        LOG.info("%s", line)
+                        last_fill_line["text"] = line
+                    redis_client.set("gk:day_fills", json.dumps(day_lots(fills)))
+            if stop_event.wait(60):
+                return
 
-    refresh_history()
-    last_history["at"] = time.monotonic()
+    threading.Thread(target=history_loop, name="order-history", daemon=True).start()
 
     seen = set()
     shape_logged = {"done": False}
+    ignored_logged = {"done": False}
 
     def on_message(event_type, _subscribe_type, payload, _raw):
         try:
             kind = int(event_type)
         except (TypeError, ValueError):
             return
-        if kind == ORDER_EVENT and not shape_logged["done"] and looks_like_buy(payload):
-            LOG.info("order event shape %s", json.dumps(mask_event(payload), separators=(",", ":")))
+        if not shape_logged["done"]:
+            LOG.info(
+                "order event shape type=%s %s",
+                kind,
+                json.dumps(mask_event(payload), separators=(",", ":")),
+            )
             shape_logged["done"] = True
         if kind == ORDER_EVENT:
-            for fill in parse_order_event(payload):
+            fills = parse_order_event(payload)
+            if not fills:
+                line = order_event_line(payload)
+                if line:
+                    LOG.info("%s", line)
+                elif not ignored_logged["done"]:
+                    LOG.info("order event ignored keys=%s", ",".join(_payload_keys(payload)))
+                    ignored_logged["done"] = True
+            for fill in fills:
                 if fill["id"] in seen:
                     continue
                 seen.add(fill["id"])
@@ -543,6 +613,7 @@ def run_account(stop_event, redis_client, token_dir, account_id):
         watch["orders_stream"] = "connected"
         publish()
         LOG.info("order events connected")
+        LOG.info("order events keepalive active 30s")
 
     def on_sdk_log(_level, message):
         classified = classify_event_log(message)
@@ -576,12 +647,7 @@ def run_account(stop_event, redis_client, token_dir, account_id):
             stop_event.wait(5)
 
     threading.Thread(target=subscribe, name="grpc-events", daemon=True).start()
-    announced = False
-    last_heartbeat = 0
     while not stop_event.is_set():
-        if time.monotonic() - last_history["at"] >= 60:
-            refresh_history()
-            last_history["at"] = time.monotonic()
         try:
             if reader is None:
                 reader = make_account_reader(token_dir)
@@ -594,11 +660,8 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 watch["open_positions"] = len(rows)
                 publish()
                 publish_positions(redis_client, rows)
-                now = time.time()
-                if not announced or now - last_heartbeat >= 300:
-                    LOG.info("positions ok, %s open", len(rows))
-                    announced = True
-                    last_heartbeat = now
+                symbols = ",".join(row["symbol"] for row in rows) or "none"
+                LOG.info("positions poll %s open %s", len(rows), symbols)
         except Exception as exc:
             LOG.info("positions poll failed: %s", type(exc).__name__)
             try:

@@ -12,6 +12,7 @@ from events import (
     mask_display,
     mask_event,
     parse_account_list,
+    order_event_line,
     parse_order_event,
     parse_positions,
     parse_recent_fills,
@@ -35,6 +36,19 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(rows[0]["id"], "ord-1:2.0")
         self.assertEqual(rows[0]["cumulative"], 2)
         self.assertEqual(rows[0]["average"], 4.05)
+
+    def test_a_working_order_logs_placed_and_a_cancel_logs_cancelled(self):
+        placed = {
+            "client_order_id": "ord-2",
+            "symbol": "TNMG",
+            "side": "BUY",
+            "order_status": "SUBMITTED",
+            "filled_quantity": "0",
+        }
+        cancelled = {**placed, "order_status": "CANCELLED"}
+        self.assertEqual(order_event_line(placed), "order event placed TNMG")
+        self.assertEqual(order_event_line(cancelled), "order event cancelled TNMG")
+        self.assertIsNone(order_event_line({**placed, "order_status": "FILLED"}))
 
     def test_a_working_order_is_not_a_fill(self):
         self.assertEqual(parse_order_event({
