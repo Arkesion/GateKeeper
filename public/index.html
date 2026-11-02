@@ -1310,9 +1310,7 @@
     if (age == null && Number.isFinite(source.positions_poll_at)) {
       age = Math.max(0, (Date.now() - source.positions_poll_at) / 1000);
     }
-    const streamDown = source.orders_stream === 'reconnecting' || source.orders_stream === 'down';
-    const pollDown = age == null || age > 60;
-    const offline = streamDown || pollDown;
+    const offline = age == null || age > 60;
     const show = configured && offline;
     note.hidden = !show;
     note.textContent = show ? 'FILLS OFFLINE' : '';

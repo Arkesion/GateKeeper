@@ -18,6 +18,9 @@ POSITION_EVENT = 1028
 # 1 is ORDER_STATUS_CHANGED. 7 is not an allowed value, and a stream on 7 can
 # ack and then stay silent.
 ORDER_SUBSCRIBE_TYPE = 1
+# The trade-events docs describe the stream as the OpenAPI order channel.
+# Two app orders produced pings and no order event, so health says so.
+APP_ORDERS_NOT_PUSHED = "app orders not pushed"
 CHANNEL_EVENTS = {
     0: "SubscribeSuccess",
     1: "Ping",
@@ -543,6 +546,26 @@ def _http_status(response):
     return status
 
 
+def poll_interval_seconds(moment=None):
+    """2s from 04:00 until 20:00 ET, otherwise 10s.
+
+    Production allows 2 calls per 2s on GET /trading/assets/positions/list.
+    One call per 2s uses half of that quota. Order history is a separate limit.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo("America/New_York")
+    now = moment or datetime.now(zone)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=zone)
+    else:
+        now = now.astimezone(zone)
+    minutes = now.hour * 60 + now.minute
+    if 4 * 60 <= minutes < 20 * 60:
+        return 2
+    return 10
+
+
 def poll_once(reader, account_id):
     from webull_data import response_json
     response = reader.get_account_position(account_id)
@@ -676,10 +699,8 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 json.dumps(mask_event(payload), separators=(",", ":")),
             )
             shape_logged["done"] = True
-        if kind in (ORDER_EVENT, POSITION_EVENT) and watch["orders_stream"] != "connected":
-            watch["orders_stream"] = "connected"
-            publish()
-            LOG.info("order events proven")
+        if kind in (ORDER_EVENT, POSITION_EVENT):
+            LOG.info("order events message type=%s", kind)
         if kind == ORDER_EVENT:
             fills = parse_order_event(payload)
             if not fills:
@@ -698,10 +719,10 @@ def run_account(stop_event, redis_client, token_dir, account_id):
             publish_positions(redis_client, parse_positions(payload))
 
     def on_connect(_client, _payload, _response):
-        watch["orders_stream"] = "unverified"
+        watch["orders_stream"] = APP_ORDERS_NOT_PUSHED
         publish()
         LOG.info("order events connected")
-        LOG.info("order events unverified")
+        LOG.info("order events %s", APP_ORDERS_NOT_PUSHED)
         LOG.info("order events keepalive active 30s")
 
     def on_sdk_log(_level, message):
@@ -744,6 +765,7 @@ def run_account(stop_event, redis_client, token_dir, account_id):
     threading.Thread(target=subscribe, name="grpc-events", daemon=True).start()
     threading.Thread(target=alive_loop, name="grpc-alive", daemon=True).start()
     while not stop_event.is_set():
+        started = time.monotonic()
         try:
             if reader is None:
                 reader = make_account_reader(token_dir)
@@ -764,7 +786,9 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 reader = make_account_reader(token_dir)
             except Exception:
                 reader = None
-        stop_event.wait(10)
+        pause = poll_interval_seconds() - (time.monotonic() - started)
+        if pause > 0:
+            stop_event.wait(pause)
 
 
 def probe_order_events(seconds=120):

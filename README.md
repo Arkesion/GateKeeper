@@ -8,7 +8,7 @@ ChartsWatcher stays the scanner. Tickers are entered by hand.
 
 Three processes, one Redis.
 
-- **webull-sidecar** holds the single Webull session. It builds 1-minute bars from Nasdaq Basic ticks, publishes quotes on `gk:live`, and writes account fills and positions when `WEBULL_ACCOUNT_ID` is set.
+- **webull-sidecar** holds the single Webull session. It builds 1-minute bars from Nasdaq Basic ticks, publishes quotes on `gk:live`, and writes account fills and positions when `WEBULL_ACCOUNT_ID` is set. Fills are detected by the positions poll within about 2 seconds from 4:00 AM to 8:00 PM ET. The order-history cross-check runs every 60 seconds as a backstop.
 - **Redis** is the bus. The sidecar writes bars, quotes, heartbeats, and account keys. The app reads them.
 - **gatekeeper** is the Node app. It turns those bars into the rail: indicators, the setup machine, tape slowdown, and the session book.
 
@@ -81,7 +81,7 @@ That pulls and runs `docker compose up --build -d`. Do not edit files on corpus.
 | UNKNOWN SYMBOL | The ticker is not a symbol the provider accepts |
 | STOP HIT · YOU ARE STILL IN | Last price is under the frozen stop while the position is open |
 | DONE FOR THE DAY | Realized loss hit the R cap or the dollar cap, or three losers in a row. Until 4:00 AM ET |
-| FILLS OFFLINE | An account is configured, and the order stream is reconnecting or the position poll is older than 60 seconds. An unverified stream does not raise this while the 10-second poll is fresh |
+| FILLS OFFLINE | An account is configured and the position poll is older than 60 seconds |
 | no account configured | `WEBULL_ACCOUNT_ID` is unset |
 | ACCOUNT NOT FOUND | The configured id is not in the account list. No other account is used |
 

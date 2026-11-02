@@ -18,6 +18,7 @@ from events import (
     order_event_line,
     parse_order_event,
     parse_positions,
+    poll_interval_seconds,
     parse_recent_fills,
     recent_fill_line,
 )
@@ -82,6 +83,15 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(mask_display(found["display"]), "CVU7****")
         self.assertEqual(found["type"], "cash")
         self.assertIsNone(find_account(rows, "CVU7R6E8"))
+
+    def test_position_poll_is_two_seconds_from_4am_until_8pm_et(self):
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 4, 0, tzinfo=ny)), 2)
+        self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 10, 19, tzinfo=ny)), 2)
+        self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 19, 59, tzinfo=ny)), 2)
+        self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 20, 0, tzinfo=ny)), 10)
+        self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 3, 59, tzinfo=ny)), 10)
 
     def test_order_subscribe_type_is_order_status_only(self):
         self.assertEqual(ORDER_SUBSCRIBE_TYPE, 1)

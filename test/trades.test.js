@@ -418,6 +418,35 @@ test('the Nov 2 CLRO fill stays open until the 6.42 sell', () => {
   assert.ok(row.order_ids.includes('37IIT78KPAKD610HQ67VOF4IE8'));
 });
 
+test('a position appearing on a poll flips the rail to IN TRADE on that poll', () => {
+  const opts = tempOpts();
+  const flat = applyMarket({
+    symbol: 'CLRO',
+    price: 6.4,
+    now: NOW,
+    lastBarLow: 6.16,
+    account: { status: 'ok', positions: [], fills: [], dayFills: null }
+  }, opts);
+  assert.equal(flat.position, null);
+
+  const live = applyMarket({
+    symbol: 'CLRO',
+    price: 6.4,
+    now: NOW + 2000,
+    lastBarLow: 6.16,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'CLRO', shares: 1, average: 6.39 }],
+      fills: [],
+      dayFills: null
+    }
+  }, opts);
+  assert.equal(live.position.symbol, 'CLRO');
+  assert.equal(live.position.entry, 6.39);
+  assert.ok(live.position.stop > 0);
+  assert.ok(live.position.r > 0);
+});
+
 test('failing checks are the red chips only', () => {
   assert.deepEqual(failingChecks(
     { macd: false, no_hv_sell: true, no_big_red: true, no_topping_tail: false, spread_ok: true },
