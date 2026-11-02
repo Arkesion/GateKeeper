@@ -531,5 +531,8 @@ test('TNMG 13:50 through 14:12 front side replay', () => {
   printFront('TNMG 2026-10-30', rows);
   assert.equal(rows[0].label, '13:50');
   assert.equal(rows.at(-1).label, '14:12');
-  assert.ok(rows.every(row => row.state === 'green' || row.state === 'red'));
+  const byLabel = Object.fromEntries(rows.map(row => [row.label, row]));
+  for (const label of ['14:04', '14:05', '14:06']) {
+    assert.equal(byLabel[label].state, 'red', label);
+  }
 });
