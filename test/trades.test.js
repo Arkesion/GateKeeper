@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { utcFromEtDateTime } = require('../lib/session');
-const { noteAccount, getAccountSnapshot, fillWatchOf } = require('../lib/providers/webull-provider');
+const { noteAccount, getAccountSnapshot, fillWatchOf, fillsNotice } = require('../lib/providers/webull-provider');
 const {
   applyFill,
   applyMarket,
@@ -445,6 +445,22 @@ test('a position appearing on a poll flips the rail to IN TRADE on that poll', (
   assert.equal(live.position.entry, 6.39);
   assert.ok(live.position.stop > 0);
   assert.ok(live.position.r > 0);
+});
+
+test('a 429 backoff shows FILLS DELAYED until the poll is 10 seconds late', () => {
+  const at = utcFromEtDateTime('2026-11-02', 10, 21);
+  const delayed = fillsNotice({ pollAt: at, backingOff: true, now: at + 3000 });
+  assert.equal(delayed.text, 'FILLS DELAYED · rate limited');
+  assert.equal(delayed.tone, 'warn');
+  const still = fillsNotice({ pollAt: at, backingOff: true, now: at + 10000 });
+  assert.equal(still.text, 'FILLS DELAYED · rate limited');
+  const offline = fillsNotice({ pollAt: at, backingOff: true, now: at + 11000 });
+  assert.equal(offline.text, 'FILLS OFFLINE');
+  assert.equal(offline.tone, 'bad');
+  const fresh = fillsNotice({ pollAt: at, backingOff: false, now: at + 3000 });
+  assert.equal(fresh, null);
+  const never = fillsNotice({ pollAt: null, backingOff: true, now: at + 3000 });
+  assert.equal(never.text, 'FILLS OFFLINE');
 });
 
 test('failing checks are the red chips only', () => {

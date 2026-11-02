@@ -16,9 +16,11 @@ from events import (
     mask_event,
     parse_account_list,
     order_event_line,
+    next_rate_delay,
     parse_order_event,
     parse_positions,
     poll_interval_seconds,
+    retry_after_seconds,
     parse_recent_fills,
     recent_fill_line,
 )
@@ -92,6 +94,30 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 19, 59, tzinfo=ny)), 2)
         self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 20, 0, tzinfo=ny)), 10)
         self.assertEqual(poll_interval_seconds(datetime(2026, 11, 2, 3, 59, tzinfo=ny)), 10)
+
+    def test_a_run_of_429s_backs_off_and_a_success_resets(self):
+        failures = 0
+        waits = []
+        for _ in range(5):
+            failures, delay = next_rate_delay(failures, 2, 10)
+            waits.append(delay)
+        self.assertEqual(waits, [2, 4, 8, 10, 10])
+        failures = 0
+        failures, delay = next_rate_delay(failures, 2, 10)
+        self.assertEqual(delay, 2)
+        failures, delay = next_rate_delay(failures, 2, 10, retry_after=6)
+        self.assertEqual(delay, 6)
+
+        failures = 0
+        history = []
+        for _ in range(5):
+            failures, delay = next_rate_delay(failures, 60, 300)
+            history.append(delay)
+        self.assertEqual(history, [60, 120, 240, 300, 300])
+
+        class Response:
+            headers = {"Retry-After": "7"}
+        self.assertEqual(retry_after_seconds(Response()), 7)
 
     def test_order_subscribe_type_is_order_status_only(self):
         self.assertEqual(ORDER_SUBSCRIBE_TYPE, 1)

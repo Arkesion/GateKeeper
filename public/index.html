@@ -39,6 +39,7 @@
     #app.lock-dim { opacity: 0.45; }
     .account-note { font-size: 12px; letter-spacing: 0.08em; color: #A3A3A3; }
     .account-note.bad { color: #F2495C; }
+    .account-note.warn { color: #FBBF24; }
 
     #pillars {
       position: relative;
@@ -1306,14 +1307,10 @@
     const note = document.getElementById('fills-note');
     if (!note || !source) return;
     const configured = source.account?.status === 'ok';
-    let age = source.positions_poll_age_s;
-    if (age == null && Number.isFinite(source.positions_poll_at)) {
-      age = Math.max(0, (Date.now() - source.positions_poll_at) / 1000);
-    }
-    const offline = age == null || age > 60;
-    const show = configured && offline;
+    const show = configured && source.fills_note;
     note.hidden = !show;
-    note.textContent = show ? 'FILLS OFFLINE' : '';
+    note.className = source.fills_note_tone === 'warn' ? 'account-note warn' : 'account-note bad';
+    note.textContent = show ? source.fills_note : '';
   }
 
   function moneySigned(value) {

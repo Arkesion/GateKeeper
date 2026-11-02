@@ -54,6 +54,6 @@ On the rail, with a symbol loaded:
 - Seven chips, ALIGNED or NOT ALIGNED, newest notes first
 - Setup state matches the last closed bars
 - If `WEBULL_ACCOUNT_ID` is unset, the rail says "no account configured" and does not open an in-trade view
-- If the account id is set and the position poll age on `/api/health` is under 60 seconds, FILLS OFFLINE stays hidden. `orders_stream` is `app orders not pushed`
+- If the account id is set and the position poll is fresh, FILLS OFFLINE stays hidden. A 429 shows `FILLS DELAYED · rate limited` until the last success is older than 10 seconds between 4:00 AM and 8:00 PM ET. `orders_stream` is `app orders not pushed`
 
 Schwab mode is not the corpus default. If it is selected, the header reads `LIVE · Schwab · last trade …` and the tape row says `n/a in Schwab mode`. Fills, positions, and lockouts still come from the Webull account.

@@ -566,13 +566,73 @@ def poll_interval_seconds(moment=None):
     return 10
 
 
+def next_rate_delay(failures, base, cap, retry_after=None):
+    """Next wait after one more 429. The header wins when Webull sends one."""
+    failures += 1
+    step = min(cap, base * (2 ** (failures - 1)))
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return failures, float(retry_after)
+    return failures, step
+
+
+def _header(response, name):
+    headers = getattr(response, "headers", None)
+    if not hasattr(headers, "get"):
+        return None
+    value = headers.get(name)
+    if value not in (None, ""):
+        return value
+    wanted = name.lower()
+    try:
+        pairs = headers.items()
+    except Exception:
+        return None
+    for key, item in pairs:
+        if str(key).lower() == wanted and item not in (None, ""):
+            return item
+    return None
+
+
+def retry_after_seconds(response, now=None):
+    raw = _header(response, "Retry-After")
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip()
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        value = None
+    if value is not None:
+        return value if value > 0 else None
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+    try:
+        moment = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    delta = (moment - current).total_seconds()
+    return delta if delta > 0 else None
+
+
+def _wait_label(delay):
+    if abs(delay - round(delay)) < 0.05:
+        return str(int(round(delay)))
+    return f"{delay:.1f}"
+
+
 def poll_once(reader, account_id):
     from webull_data import response_json
     response = reader.get_account_position(account_id)
     status = _http_status(response)
+    retry_after = retry_after_seconds(response)
     if status not in (None, 200):
-        return None, status
-    return parse_positions(response_json(response)), status or 200
+        return None, status, retry_after
+    return parse_positions(response_json(response)), status or 200, None
 
 
 def history_bounds(moment):
@@ -600,14 +660,15 @@ def read_recent_fills(reader, account_id, now=None):
             request.set_pagination_key(page_key)
         response = reader.client.get_response(request)
         status = _http_status(response)
+        retry_after = retry_after_seconds(response)
         if status not in (None, 200):
-            return None, status
+            return None, status, retry_after
         payload = response_json(response)
         rows.extend(parse_recent_fills(payload))
         page_key = payload.get("pagination_key") if isinstance(payload, dict) else None
         if not page_key:
             break
-    return rows, status or 200
+    return rows, status or 200, None
 
 
 def run_account(stop_event, redis_client, token_dir, account_id):
@@ -656,11 +717,13 @@ def run_account(stop_event, redis_client, token_dir, account_id):
 
     def history_loop():
         history_reader = None
+        failures = 0
         while not stop_event.is_set():
+            wait = 60
             try:
                 if history_reader is None:
                     history_reader = make_account_reader(token_dir)
-                fills, status = read_recent_fills(history_reader, account_id)
+                fills, status, retry_after = read_recent_fills(history_reader, account_id)
             except Exception as exc:
                 code = getattr(exc, "error_code", None)
                 http = getattr(exc, "http_status", None)
@@ -669,16 +732,24 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 else:
                     LOG.info("recent fills failed: %s", type(exc).__name__)
                 history_reader = None
+                failures = 0
             else:
-                if fills is None:
+                if status == 429:
+                    failures, wait = next_rate_delay(failures, 60, 300, retry_after)
+                    LOG.info("recent fills limited, retry in %ss", _wait_label(wait))
+                elif fills is None:
                     LOG.info("recent fills failed: %s", status)
+                    failures = 0
+                    if status in (401, 403):
+                        history_reader = None
                 else:
+                    failures = 0
                     line = recent_fill_line(fills)
                     if line != last_fill_line["text"]:
                         LOG.info("%s", line)
                         last_fill_line["text"] = line
                     redis_client.set("gk:day_fills", json.dumps(day_lots(fills)))
-            if stop_event.wait(60):
+            if stop_event.wait(wait):
                 return
 
     threading.Thread(target=history_loop, name="order-history", daemon=True).start()
@@ -764,16 +835,31 @@ def run_account(stop_event, redis_client, token_dir, account_id):
 
     threading.Thread(target=subscribe, name="grpc-events", daemon=True).start()
     threading.Thread(target=alive_loop, name="grpc-alive", daemon=True).start()
+    poll_failures = 0
     while not stop_event.is_set():
         started = time.monotonic()
         try:
             if reader is None:
                 reader = make_account_reader(token_dir)
-            rows, status = poll_once(reader, account_id)
+            rows, status, retry_after = poll_once(reader, account_id)
+            if status == 429:
+                poll_failures, delay = next_rate_delay(poll_failures, 2, 10, retry_after)
+                watch["positions_backoff"] = True
+                publish()
+                LOG.info("positions poll limited, retry in %ss", _wait_label(delay))
+                stop_event.wait(delay)
+                continue
             if rows is None:
                 LOG.info("positions poll failed: %s", status)
-                reader = make_account_reader(token_dir)
+                poll_failures = 0
+                if watch.get("positions_backoff"):
+                    watch["positions_backoff"] = False
+                    publish()
+                if status in (401, 403):
+                    reader = make_account_reader(token_dir)
             else:
+                poll_failures = 0
+                watch["positions_backoff"] = False
                 watch["positions_poll_at"] = int(time.time() * 1000)
                 watch["open_positions"] = len(rows)
                 publish()
@@ -782,10 +868,11 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 LOG.info("positions poll %s open %s", len(rows), symbols)
         except Exception as exc:
             LOG.info("positions poll failed: %s", type(exc).__name__)
-            try:
-                reader = make_account_reader(token_dir)
-            except Exception:
-                reader = None
+            reader = None
+            poll_failures = 0
+            if watch.get("positions_backoff"):
+                watch["positions_backoff"] = False
+                publish()
         pause = poll_interval_seconds() - (time.monotonic() - started)
         if pause > 0:
             stop_event.wait(pause)
