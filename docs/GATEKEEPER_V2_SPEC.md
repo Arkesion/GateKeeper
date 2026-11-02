@@ -127,7 +127,7 @@ Context dots render grey with values and never affect the verdict. The verdict r
 | High-volume sell | ✓ No HV sell | ✕ HV sell 14:02 | Red bar volume above the largest green bar of the run. Decay below |
 | Large sell candle | ✓ No big red | ✕ Big red 14:02 | Red body ≥ 2× the 10-bar median body. Decay below |
 | Topping tail | ✓ No tail | ✕ Tail 14:02 | Spec tail rule. Decay below. The hover says Topping tail |
-| Front side | ✓ Front side | ✕ Choppy | Higher highs and higher lows |
+| Front side | ✓ Front side | ✕ Choppy | Front side while setup is SURGE, PULLBACK, ARMED, or TRIGGERED, or when the forming bar or either of the last 2 closed bars makes a new high above the prior 10-bar high with a higher swing low. Choppy when setup is FAILED, a close is below the most recent pullback low, or the last 5 bars make no new high and their ranges overlap. Otherwise the last state. |
 | Giveback | ✓ Giveback 30% | ✕ Giveback 60% | Pullback retrace of the leg, floored at 0 and capped at 100%. `Giveback —` when there is no leg or the leg is under $0.05 |
 | Spread | ✓ Spread 1¢ | ✕ Spread 14¢ | ≤ 10¢ (MY OWN number) |
 

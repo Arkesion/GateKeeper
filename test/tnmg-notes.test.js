@@ -30,7 +30,8 @@ const {
   latestHvSellTime,
   latestLargeSellTime
 } = require('../lib/signals');
-const { buildSession1mBars, buildIndicator1mBars, sessionLow } = require('../lib/session');
+const { buildSession1mBars, buildIndicator1mBars, sessionLow, utcFromEtDateTime } = require('../lib/session');
+const { replaySetup } = require('../lib/setup-machine');
 const { eventsAreStale, logSignalState, resetSignalLog } = require('../lib/state');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -329,10 +330,12 @@ test('a near-zero giveback leg does not print a huge percent', () => {
   assert.equal(none.state, 'red');
 });
 
+// HTTP bars, TNMG 2026-10-30, from the 13:47 start through the 14:10 start.
+// Chart times are one minute later.
+const TNMG_AFTERNOON = [{"datetime":1793382420000,"open":3.7136,"high":3.7136,"low":3.68,"close":3.6901,"volume":24186},{"datetime":1793382480000,"open":3.6902,"high":3.72,"low":3.68,"close":3.7143,"volume":10191},{"datetime":1793382540000,"open":3.7002,"high":3.74,"low":3.7001,"close":3.73,"volume":26478},{"datetime":1793382600000,"open":3.73,"high":3.77,"low":3.72,"close":3.77,"volume":18835},{"datetime":1793382660000,"open":3.76,"high":3.89,"low":3.71,"close":3.72,"volume":113159},{"datetime":1793382720000,"open":3.729,"high":3.75,"low":3.7,"close":3.72,"volume":44734},{"datetime":1793382780000,"open":3.735,"high":3.7499,"low":3.7,"close":3.7186,"volume":16879},{"datetime":1793382840000,"open":3.715,"high":3.7798,"low":3.715,"close":3.77,"volume":42265},{"datetime":1793382900000,"open":3.75,"high":3.88,"low":3.75,"close":3.8683,"volume":75585},{"datetime":1793382960000,"open":3.86,"high":4.02,"low":3.83,"close":3.99,"volume":246138},{"datetime":1793383020000,"open":3.995,"high":4.04,"low":3.9,"close":3.96,"volume":237191},{"datetime":1793383080000,"open":3.96,"high":4.012,"low":3.94,"close":3.9535,"volume":118597},{"datetime":1793383140000,"open":3.94,"high":3.94,"low":3.87,"close":3.92,"volume":109081},{"datetime":1793383200000,"open":3.9267,"high":3.95,"low":3.84,"close":3.8787,"volume":74820},{"datetime":1793383260000,"open":3.88,"high":3.9,"low":3.86,"close":3.8801,"volume":28950},{"datetime":1793383320000,"open":3.885,"high":4.01,"low":3.86,"close":3.985,"volume":148011},{"datetime":1793383380000,"open":3.9801,"high":4.1,"low":3.94,"close":3.9599,"volume":167885},{"datetime":1793383440000,"open":3.97,"high":4.045,"low":3.959,"close":4.015,"volume":88877},{"datetime":1793383500000,"open":4.011,"high":4.07,"low":3.96,"close":3.965,"volume":135672},{"datetime":1793383560000,"open":3.96,"high":4,"low":3.88,"close":3.89,"volume":114607},{"datetime":1793383620000,"open":3.8999,"high":3.92,"low":3.8635,"close":3.89,"volume":63571},{"datetime":1793383680000,"open":3.88,"high":3.92,"low":3.8601,"close":3.89,"volume":31591},{"datetime":1793383740000,"open":3.89,"high":3.89,"low":3.71,"close":3.829,"volume":230678},{"datetime":1793383800000,"open":3.8101,"high":3.8499,"low":3.8,"close":3.8035,"volume":35125}];
+
 test('the 13:57 buy and the 14:10 sell are events when those bars are present', () => {
-  // HTTP bars, TNMG 2026-10-30, from the 13:47 start through the 14:10 start.
-  // Chart times are one minute later. A four-minute halt ends at the 13:16 start bar.
-  const bars = [{"datetime":1793382420000,"open":3.7136,"high":3.7136,"low":3.68,"close":3.6901,"volume":24186},{"datetime":1793382480000,"open":3.6902,"high":3.72,"low":3.68,"close":3.7143,"volume":10191},{"datetime":1793382540000,"open":3.7002,"high":3.74,"low":3.7001,"close":3.73,"volume":26478},{"datetime":1793382600000,"open":3.73,"high":3.77,"low":3.72,"close":3.77,"volume":18835},{"datetime":1793382660000,"open":3.76,"high":3.89,"low":3.71,"close":3.72,"volume":113159},{"datetime":1793382720000,"open":3.729,"high":3.75,"low":3.7,"close":3.72,"volume":44734},{"datetime":1793382780000,"open":3.735,"high":3.7499,"low":3.7,"close":3.7186,"volume":16879},{"datetime":1793382840000,"open":3.715,"high":3.7798,"low":3.715,"close":3.77,"volume":42265},{"datetime":1793382900000,"open":3.75,"high":3.88,"low":3.75,"close":3.8683,"volume":75585},{"datetime":1793382960000,"open":3.86,"high":4.02,"low":3.83,"close":3.99,"volume":246138},{"datetime":1793383020000,"open":3.995,"high":4.04,"low":3.9,"close":3.96,"volume":237191},{"datetime":1793383080000,"open":3.96,"high":4.012,"low":3.94,"close":3.9535,"volume":118597},{"datetime":1793383140000,"open":3.94,"high":3.94,"low":3.87,"close":3.92,"volume":109081},{"datetime":1793383200000,"open":3.9267,"high":3.95,"low":3.84,"close":3.8787,"volume":74820},{"datetime":1793383260000,"open":3.88,"high":3.9,"low":3.86,"close":3.8801,"volume":28950},{"datetime":1793383320000,"open":3.885,"high":4.01,"low":3.86,"close":3.985,"volume":148011},{"datetime":1793383380000,"open":3.9801,"high":4.1,"low":3.94,"close":3.9599,"volume":167885},{"datetime":1793383440000,"open":3.97,"high":4.045,"low":3.959,"close":4.015,"volume":88877},{"datetime":1793383500000,"open":4.011,"high":4.07,"low":3.96,"close":3.965,"volume":135672},{"datetime":1793383560000,"open":3.96,"high":4,"low":3.88,"close":3.89,"volume":114607},{"datetime":1793383620000,"open":3.8999,"high":3.92,"low":3.8635,"close":3.89,"volume":63571},{"datetime":1793383680000,"open":3.88,"high":3.92,"low":3.8601,"close":3.89,"volume":31591},{"datetime":1793383740000,"open":3.89,"high":3.89,"low":3.71,"close":3.829,"volume":230678},{"datetime":1793383800000,"open":3.8101,"high":3.8499,"low":3.8,"close":3.8035,"volume":35125}];
+  const bars = TNMG_AFTERNOON;
   const buy = bars.find(bar => bar.volume === 246138);
   const sell = bars.find(bar => bar.volume === 230678);
   assert.equal(formatChartHm(buy.datetime), '13:57');
@@ -438,4 +441,95 @@ test('a 2.95 low on the 4:00 series stays 2.95 beside a 3.00 bar', () => {
     { datetime: open + 4 * 60 * 60000, open: 3.02, high: 3.08, low: 3.00, close: 3.04, volume: 1000 }
   ]);
   assert.equal(low, 2.95);
+});
+
+const CLRO_BARS = [
+  ['08:40', 5.91, 5.96, 5.87, 5.9507, 39809],
+  ['08:41', 5.9331, 6.1, 5.93, 6.0674, 153404],
+  ['08:42', 6.06, 6.12, 6.03, 6.0397, 108683],
+  ['08:43', 6.0379, 6.09, 6, 6.0592, 46708],
+  ['08:44', 6.0522, 6.1, 5.95, 6.0897, 74203],
+  ['08:45', 6.0701, 6.09, 5.96, 5.97, 76616],
+  ['08:46', 5.97, 6.08, 5.93, 6.04, 87253],
+  ['08:47', 6.0401, 6.0699, 6.03, 6.03, 21118],
+  ['08:48', 6.0301, 6.08, 5.9978, 6.0402, 54621],
+  ['08:49', 6.04, 6.2, 6.01, 6.1602, 144801],
+  ['08:50', 6.1615, 6.24, 6.1507, 6.2303, 88161],
+  ['08:51', 6.2303, 6.25, 6.14, 6.1585, 100824],
+  ['08:52', 6.1508, 6.2, 6.12, 6.1593, 65855],
+  ['08:53', 6.1593, 6.22, 6, 6.0378, 138985],
+  ['08:54', 6.04, 6.11, 5.99, 6.08, 69148],
+  ['08:55', 6.0792, 6.09, 6, 6.07, 35778],
+  ['08:56', 6.08, 6.13, 6.07, 6.0908, 53355],
+  ['08:57', 6.0992, 6.15, 6.09, 6.145, 34529],
+  ['08:58', 6.15, 6.2, 6.14, 6.1921, 86047],
+  ['08:59', 6.2, 6.2, 6.14, 6.16, 20852],
+  ['09:00', 6.17, 6.24, 6.06, 6.09, 105710],
+  ['09:01', 6.0898, 6.22, 6.08, 6.1785, 64198],
+  ['09:02', 6.18, 6.18, 6.04, 6.08, 40532],
+  ['09:03', 6.0797, 6.15, 6.0701, 6.1, 37574],
+  ['09:04', 6.1, 6.15, 6.1, 6.1001, 14357],
+  ['09:05', 6.1092, 6.2, 6.1, 6.1915, 45911],
+  ['09:06', 6.1903, 6.2, 6.16, 6.17, 27830],
+  ['09:07', 6.1698, 6.2, 6.06, 6.1663, 52098],
+  ['09:08', 6.17, 6.19, 6.14, 6.16, 30076],
+  ['09:09', 6.1593, 6.18, 6.1, 6.1237, 34084],
+  ['09:10', 6.1298, 6.19, 6.11, 6.1597, 39201],
+  ['09:11', 6.1597, 6.19, 6.14, 6.1637, 38673],
+  ['09:12', 6.1637, 6.34, 6.16, 6.34, 140497],
+  ['09:13', 6.3393, 6.4, 6.25, 6.3707, 144651],
+  ['09:14', 6.3798, 6.5, 6.3, 6.4437, 169872],
+  ['09:15', 6.4437, 6.55, 6.4163, 6.42, 154145],
+  ['09:16', 6.4107, 6.5, 6.37, 6.4801, 122010],
+  ['09:17', 6.4708, 6.5, 6.42, 6.46, 98720],
+  ['09:18', 6.4592, 6.52, 6.39, 6.4008, 71419],
+  ['09:19', 6.4015, 6.46, 6.4, 6.4599, 29355],
+  ['09:20', 6.47, 6.51, 6.41, 6.44, 68927]
+].map(([chart, open, high, low, close, volume]) => {
+  const [hour, minute] = chart.split(':').map(Number);
+  const start = hour * 60 + minute - 1;
+  return {
+    datetime: utcFromEtDateTime('2026-11-02', Math.floor(start / 60), start % 60),
+    open, high, low, close, volume
+  };
+});
+
+function frontRows(series, from, to) {
+  const rows = [];
+  for (const bar of series) {
+    const label = formatChartHm(bar.datetime);
+    if (label < from || label > to) continue;
+    const prefix = series.filter(item => item.datetime <= bar.datetime);
+    const setup = replaySetup(prefix);
+    const chip = computeFrontSideSignal(prefix, bar.close, null, null, setup);
+    rows.push({ label, state: chip.state, phase: chip.phase, setup: setup.state });
+  }
+  return rows;
+}
+
+function printFront(title, rows) {
+  console.log(title);
+  for (const row of rows) {
+    console.log(`${row.label} ${row.state === 'green' ? 'front' : 'choppy'} ${row.phase} ${row.setup}`);
+  }
+}
+
+test('CLRO 09:12 through 09:15 is front side, and 09:16 on is choppy', () => {
+  const rows = frontRows(CLRO_BARS, '09:08', '09:20');
+  printFront('CLRO 2026-11-02', rows);
+  const byLabel = Object.fromEntries(rows.map(row => [row.label, row]));
+  for (const label of ['09:12', '09:13', '09:14', '09:15']) {
+    assert.equal(byLabel[label].state, 'green', label);
+  }
+  for (const label of ['09:16', '09:17', '09:18', '09:19', '09:20']) {
+    assert.equal(byLabel[label].state, 'red', label);
+  }
+});
+
+test('TNMG 13:50 through 14:12 front side replay', () => {
+  const rows = frontRows(fixture.day, '13:50', '14:12');
+  printFront('TNMG 2026-10-30', rows);
+  assert.equal(rows[0].label, '13:50');
+  assert.equal(rows.at(-1).label, '14:12');
+  assert.ok(rows.every(row => row.state === 'green' || row.state === 'red'));
 });
