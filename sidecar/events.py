@@ -6,9 +6,25 @@ import threading
 import time
 
 LOG = logging.getLogger("gatekeeper.sidecar")
+ORDER_LOG = logging.getLogger("gatekeeper.order_events")
+_stream_counts = {"n": 0}
+_secret_bits = []
+RAW_SINK = None
 
 ORDER_EVENT = 1024
 POSITION_EVENT = 1028
+# SDK 3.0.4 writes subscribeType 7 (1|2|4). Its own comment says 1, 2, and 4 are
+# the allowed values, and the trade-events example subscribes for order status.
+# 1 is ORDER_STATUS_CHANGED. 7 is not an allowed value, and a stream on 7 can
+# ack and then stay silent.
+ORDER_SUBSCRIBE_TYPE = 1
+CHANNEL_EVENTS = {
+    0: "SubscribeSuccess",
+    1: "Ping",
+    2: "AuthError",
+    3: "NumOfConnExceed",
+    4: "SubscribeExpired",
+}
 FILLED = {"FILLED", "PARTIAL_FILLED", "PARTIALLY_FILLED"}
 PLACED = {"NEW", "SUBMITTED", "PENDING", "WORKING", "PENDING_SUBMIT"}
 
@@ -325,6 +341,61 @@ def mask_event(payload):
     return out
 
 
+def remember_secret(value):
+    text = str(value or "")
+    if len(text) >= 8 and text not in _secret_bits:
+        _secret_bits.append(text)
+
+
+def mask_text(text):
+    raw = "" if text is None else str(text)
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        raw = json.dumps(mask_event(parsed), separators=(",", ":"))
+    for bit in _secret_bits:
+        raw = raw.replace(bit, "****")
+    if len(raw) > 240:
+        raw = raw[:240]
+    return raw
+
+
+def enable_order_event_log():
+    if ORDER_LOG.handlers:
+        return
+    ORDER_LOG.setLevel(logging.DEBUG)
+    ORDER_LOG.propagate = False
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    ORDER_LOG.addHandler(handler)
+
+
+def raw_event_line(response):
+    kind = int(response.eventType)
+    name = CHANNEL_EVENTS.get(kind, str(kind))
+    payload = response.payload or ""
+    body = ""
+    if payload and name != "Ping":
+        body = " " + mask_text(payload)
+    return (
+        f"order event raw type={name} subscribe={int(response.subscribeType)} "
+        f"bytes={len(payload)}{body}"
+    )
+
+
+def note_raw_event(response):
+    _stream_counts["n"] += 1
+    line = raw_event_line(response)
+    ORDER_LOG.debug(line)
+    sink = RAW_SINK
+    if sink:
+        sink(line)
+    return line
+
+
 def _payload_keys(payload):
     if isinstance(payload, dict):
         return sorted(str(key) for key in payload.keys())
@@ -401,7 +472,7 @@ def _quiet_request(self, app_key, app_secret, accounts):
     from webull.trade.events import events_pb2 as pb
     from webull.trade.events.signature_composer import calc_signature
     request = pb.SubscribeRequest(
-        subscribeType=7,
+        subscribeType=ORDER_SUBSCRIBE_TYPE,
         timestamp=int(time.time() * 1000),
         accounts=accounts,
     )
@@ -422,6 +493,17 @@ def _quiet_subscribe(self, accounts):
     import grpc
     from webull.trade.events import events_pb2_grpc as pb_grpc
     target = self._host + ":" + str(self._port)
+    LOG.info(
+        "order events target %s subscribeType=%s tls=%s",
+        target, ORDER_SUBSCRIBE_TYPE, int(bool(self._tls_enable)),
+    )
+    handler = self._easy_handler
+
+    def wrapped(response):
+        note_raw_event(response)
+        return handler(response)
+
+    self._easy_handler = wrapped
     options = _grpc_channel_options()
     if self._tls_enable:
         channel = grpc.secure_channel(target, grpc.ssl_channel_credentials(), options)
@@ -507,6 +589,8 @@ def read_recent_fills(reader, account_id, now=None):
 
 def run_account(stop_event, redis_client, token_dir, account_id):
     account_id = str(account_id or "").strip()
+    remember_secret(account_id)
+    enable_order_event_log()
     if not account_id:
         publish_account(redis_client, "unconfigured")
         LOG.info("no account configured")
@@ -592,6 +676,10 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 json.dumps(mask_event(payload), separators=(",", ":")),
             )
             shape_logged["done"] = True
+        if kind in (ORDER_EVENT, POSITION_EVENT) and watch["orders_stream"] != "connected":
+            watch["orders_stream"] = "connected"
+            publish()
+            LOG.info("order events proven")
         if kind == ORDER_EVENT:
             fills = parse_order_event(payload)
             if not fills:
@@ -610,9 +698,10 @@ def run_account(stop_event, redis_client, token_dir, account_id):
             publish_positions(redis_client, parse_positions(payload))
 
     def on_connect(_client, _payload, _response):
-        watch["orders_stream"] = "connected"
+        watch["orders_stream"] = "unverified"
         publish()
         LOG.info("order events connected")
+        LOG.info("order events unverified")
         LOG.info("order events keepalive active 30s")
 
     def on_sdk_log(_level, message):
@@ -646,7 +735,14 @@ def run_account(stop_event, redis_client, token_dir, account_id):
             LOG.info("order events reconnecting: retry")
             stop_event.wait(5)
 
+    def alive_loop():
+        while not stop_event.is_set():
+            if stop_event.wait(60):
+                return
+            LOG.info("order events alive, %s messages", _stream_counts["n"])
+
     threading.Thread(target=subscribe, name="grpc-events", daemon=True).start()
+    threading.Thread(target=alive_loop, name="grpc-alive", daemon=True).start()
     while not stop_event.is_set():
         try:
             if reader is None:
@@ -669,3 +765,55 @@ def run_account(stop_event, redis_client, token_dir, account_id):
             except Exception:
                 reader = None
         stop_event.wait(10)
+
+
+def probe_order_events(seconds=120):
+    """Print channel messages for `seconds`, then exit. Does not send orders."""
+    global RAW_SINK
+    import os
+    from webull_data import credentials
+    key, secret, _http, _mqtt = credentials()
+    account_id = os.environ.get("WEBULL_ACCOUNT_ID", "").strip()
+    if not key or not secret or not account_id:
+        print("order events probe missing credentials or WEBULL_ACCOUNT_ID", flush=True)
+        return 1
+    remember_secret(account_id)
+    enable_order_event_log()
+
+    def show(line):
+        print(line, flush=True)
+
+    RAW_SINK = show
+
+    def on_message(event_type, subscribe_type, payload, _raw):
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        print(
+            f"order event message type={event_type} subscribe={subscribe_type} {mask_text(text)}",
+            flush=True,
+        )
+
+    def on_connect(_client, _payload, _response):
+        print("order events connected", flush=True)
+        print("order events unverified", flush=True)
+
+    def on_log(_level, message):
+        classified = classify_event_log(message)
+        if not classified:
+            return
+        kind, reason = classified
+        print(f"order events {kind}: {reason}", flush=True)
+
+    def subscribe():
+        client = QuietTradeEvents(key, secret)
+        inner = client._client
+        print(
+            f"order events probe host={inner._host} port={inner._port} "
+            f"subscribeType={ORDER_SUBSCRIBE_TYPE} seconds={seconds}",
+            flush=True,
+        )
+        client.subscribe(account_id, on_message, on_connect, on_log)
+
+    threading.Thread(target=subscribe, name="order-events-probe", daemon=True).start()
+    time.sleep(seconds)
+    print(f"order events probe done messages={_stream_counts['n']}", flush=True)
+    return 0

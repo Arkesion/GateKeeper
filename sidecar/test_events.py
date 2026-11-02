@@ -5,8 +5,11 @@ import unittest
 from datetime import datetime, timezone
 
 from events import (
+    ORDER_SUBSCRIBE_TYPE,
     classify_event_log,
     day_lots,
+    raw_event_line,
+    remember_secret,
     find_account,
     history_bounds,
     mask_display,
@@ -79,6 +82,20 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(mask_display(found["display"]), "CVU7****")
         self.assertEqual(found["type"], "cash")
         self.assertIsNone(find_account(rows, "CVU7R6E8"))
+
+    def test_order_subscribe_type_is_order_status_only(self):
+        self.assertEqual(ORDER_SUBSCRIBE_TYPE, 1)
+
+    def test_raw_channel_line_hides_the_account_id(self):
+        remember_secret("ACCTSECRET")
+        class Response:
+            eventType = 0
+            subscribeType = 1
+            payload = '{"account_id":"ACCTSECRET","symbol":"CLRO"}'
+        line = raw_event_line(Response())
+        self.assertIn("SubscribeSuccess", line)
+        self.assertIn("CLRO", line)
+        self.assertNotIn("ACCTSECRET", line)
 
     def test_event_log_drops_the_subscribe_payload(self):
         self.assertIsNone(classify_event_log("subscribe success, response: account_id=SECRET"))

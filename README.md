@@ -81,7 +81,7 @@ That pulls and runs `docker compose up --build -d`. Do not edit files on corpus.
 | UNKNOWN SYMBOL | The ticker is not a symbol the provider accepts |
 | STOP HIT · YOU ARE STILL IN | Last price is under the frozen stop while the position is open |
 | DONE FOR THE DAY | Realized loss hit the R cap or the dollar cap, or three losers in a row. Until 4:00 AM ET |
-| FILLS OFFLINE | An account is configured, and the order stream is down or the position poll is older than 60 seconds |
+| FILLS OFFLINE | An account is configured, and the order stream is reconnecting or the position poll is older than 60 seconds. An unverified stream does not raise this while the 10-second poll is fresh |
 | no account configured | `WEBULL_ACCOUNT_ID` is unset |
 | ACCOUNT NOT FOUND | The configured id is not in the account list. No other account is used |
 
