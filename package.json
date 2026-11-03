@@ -1,7 +1,7 @@
 {
   "name": "gatekeeper",
   "version": "1.0.0",
-  "description": "",
+  "description": "Read-only day-trading rail. Gospel checks, setup state, and in-trade lockouts. Does not place orders.",
   "main": "server.js",
   "scripts": {
     "test": "node --test"

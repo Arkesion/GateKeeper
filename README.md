@@ -1,8 +1,8 @@
-# Gatekeeper
+# Gatekeeper 1.0
 
 A read-only rail for one ticker at a time. It shows whether the seven Gospel checks are aligned, the setup state, and, once a fill arrives, the frozen stop and the day's lockouts. It does not place, modify, or cancel orders.
 
-ChartsWatcher stays the scanner. Tickers are entered by hand.
+This is the 1.0 release. The Gospel checks, the setup machine, tape slowdown, and in-trade lockouts are in. The pillar scanner was dropped. ChartsWatcher stays the scanner, and tickers are entered by hand.
 
 ## Architecture
 

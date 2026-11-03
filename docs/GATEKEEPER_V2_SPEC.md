@@ -279,7 +279,7 @@ Measured on live data, 2026-10-28 and 29. These override earlier assumptions in 
 
 ## Build phases
 
-Phases 1–4 and 6 need only Webull. Phase 5 is dropped.
+1.0 is shipped. Phases 1–4 and 6 are in. Phase 5 stays dropped. Phases 1–4 and 6 need only Webull.
 
 1. **Data layer.** Webull provider behind a `MarketDataProvider` interface: backfill bars, stream L1, build 1-min bars live.
    - Done when: BRAI fixture bars match the Webull chart candle for candle, and the lock test result is documented.
