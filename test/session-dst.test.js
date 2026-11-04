@@ -12,7 +12,9 @@ const {
   stampBarEt,
   getEtDateString,
   getEtMinutes,
-  getVwapConfig
+  getVwapConfig,
+  openingBlackout,
+  blackoutMode
 } = require('../lib/session');
 
 const SESSIONS = {
@@ -78,6 +80,25 @@ test('session-bound cache does not leak the EDT offset into EST', () => {
   assert.equal(boundsForDate('2026-10-30'), friday);
   assert.notEqual(friday.ethStartMs - Date.parse('2026-10-30T00:00:00Z'),
     monday.ethStartMs - Date.parse('2026-11-02T00:00:00Z'));
+});
+
+test('the opening blackout runs 09:25 through 09:35 on a trading day only', () => {
+  for (const date of ['2026-11-04', '2026-10-30']) {
+    const start = utcFromEtDateTime(date, 9, 25);
+    const end = utcFromEtDateTime(date, 9, 35);
+    const on = openingBlackout(start);
+    assert.ok(on);
+    assert.equal(on.end, '09:35');
+    assert.equal(on.until, end);
+    assert.equal(openingBlackout(start - 1000), null);
+    assert.equal(openingBlackout(end), null);
+    assert.equal(blackoutMode(on, {}), 'overlay');
+    assert.equal(blackoutMode(on, { position: true }), 'banner');
+    assert.equal(blackoutMode(on, { position: true, stopHit: true }), null);
+    assert.equal(blackoutMode(on, { dayLock: true }), null);
+  }
+  assert.equal(openingBlackout(utcFromEtDateTime('2026-11-07', 9, 30)), null);
+  assert.equal(openingBlackout(utcFromEtDateTime('2026-11-26', 9, 30)), null);
 });
 
 test('BRAI recompute values stay the same after the formatter change', () => {

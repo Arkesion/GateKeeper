@@ -564,6 +564,64 @@ test('CHSN today is two losers, a third locks the symbol, and a scratch does not
   assert.deepEqual(viewOf(restored, null, now + 4000, opts).session.locked_symbols, ['CHSN']);
 });
 
+test('a buy inside the opening blackout is tagged and a 09:24 buy is not', () => {
+  const opts = tempOpts();
+  opts.signalLog = path.join(opts.dir, 'signal.log');
+  const before = utcFromEtDateTime('2026-11-04', 9, 24);
+  const at = utcFromEtDateTime('2026-11-04', 9, 26);
+  const early = applyMarket({
+    symbol: 'CHSN',
+    now: before,
+    lastBarLow: 3.9,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'CHSN', shares: 1, average: 4 }],
+      fills: [{ id: 'early', symbol: 'CHSN', side: 'BUY', shares: 1, price: 4, ts: before }]
+    }
+  }, opts);
+  assert.equal(early.session.blackout_trades, 0);
+  applyMarket({
+    symbol: 'CHSN',
+    now: before + 1000,
+    account: {
+      status: 'ok',
+      positions: [],
+      fills: [{ id: 'early-sell', symbol: 'CHSN', side: 'SELL', shares: 1, price: 4.05, ts: before + 1000 }]
+    }
+  }, opts);
+  const bought = applyMarket({
+    symbol: 'CHSN',
+    now: at,
+    lastBarLow: 3.9,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'CHSN', shares: 1, average: 4.09 }],
+      fills: [{ id: 'b', symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.09, ts: at }]
+    }
+  }, opts);
+  assert.equal(bought.session.blackout_trades, 1);
+  assert.equal(bought.position.symbol, 'CHSN');
+  applyMarket({
+    symbol: 'CHSN',
+    now: at + 60000,
+    account: {
+      status: 'ok',
+      positions: [],
+      dayFills: [
+        { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.09, ts: at, order_id: 'b' },
+        { symbol: 'CHSN', side: 'SELL', shares: 1, price: 4.2, ts: at + 60000, order_id: 's' }
+      ]
+    }
+  }, opts);
+  const lines = fs.readFileSync(opts.tradeLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(lines[lines.length - 1].blackout, true);
+  assert.equal(lines[lines.length - 1].entry, 4.09);
+  const signals = fs.readFileSync(opts.signalLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].blackout, true);
+  assert.equal(signals[0].symbol, 'CHSN');
+});
+
 test('failing checks are the red chips only', () => {
   assert.deepEqual(failingChecks(
     { macd: false, no_hv_sell: true, no_big_red: true, no_topping_tail: false, spread_ok: true },

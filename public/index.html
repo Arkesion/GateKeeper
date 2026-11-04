@@ -322,6 +322,16 @@
     #overlay-invalid { background: rgba(0, 0, 0, 0.88); }
     #overlay-stop { background: rgba(180, 20, 30, 0.42); }
     #overlay-done { background: rgba(0, 0, 0, 0.55); }
+    #overlay-blackout { background: rgba(0, 0, 0, 0.55); }
+    #blackout-banner {
+      margin: 0;
+      padding: 8px 14px;
+      background: rgba(242, 73, 92, 0.18);
+      color: #F2495C;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      text-align: center;
+    }
     #reclaim-btn, #reauth-btn {
       color: #EDEDED;
       background: #1C1C1C;
@@ -336,6 +346,7 @@
 </head>
 <body>
 <div id="app">
+  <p id="blackout-banner" hidden>OPENING BLACKOUT · manage only</p>
   <nav id="pillars" aria-label="Pillar stocks"></nav>
 
   <header>
@@ -407,6 +418,7 @@
     <div class="box"><div class="k">REALIZED</div><div class="v" id="risk-realized">—</div><div class="k" id="risk-estimated" hidden>R estimated</div></div>
     <div class="box"><div class="k">LOSERS</div><div class="v" id="risk-losers">0 of 3</div></div>
     <div class="box"><div class="k">MAX LOSS LEFT</div><div class="v" id="risk-left">—</div></div>
+    <div class="k" id="risk-blackout" style="grid-column: 1 / -1">blackout trades today: 0</div>
   </section>
 </div>
 
@@ -421,6 +433,7 @@
   <div class="overlay" id="overlay-invalid"><div class="overlay-title">UNKNOWN SYMBOL</div><div class="overlay-sub" id="overlay-invalid-sub"></div></div>
   <div class="overlay" id="overlay-stop"><div class="overlay-title">STOP HIT · YOU ARE STILL IN</div></div>
   <div class="overlay" id="overlay-done"><div class="overlay-title">DONE FOR THE DAY</div></div>
+  <div class="overlay" id="overlay-blackout"><div class="overlay-title">NO TRADING · OPENING BLACKOUT · until <span id="blackout-end">09:35</span></div><div class="overlay-sub" id="blackout-count"></div></div>
 </div>
 
 <script>
@@ -453,6 +466,26 @@
   let marketSession = '';
   let openPositionSymbol = '';
   let lockedSymbols = [];
+  let blackoutUntil = null;
+
+  function blackoutMode(window, flags) {
+    if (!window || flags.dayLock || flags.stopHit) return null;
+    return flags.position ? 'banner' : 'overlay';
+  }
+
+  function paintBlackoutCount() {
+    const el = document.getElementById('blackout-count');
+    if (!el) return;
+    if (!Number.isFinite(blackoutUntil)) {
+      el.textContent = '';
+      return;
+    }
+    const left = Math.max(0, Math.ceil((blackoutUntil - Date.now()) / 1000));
+    const mm = String(Math.floor(left / 60)).padStart(2, '0');
+    const ss = String(left % 60).padStart(2, '0');
+    el.textContent = `${mm}:${ss}`;
+  }
+  setInterval(paintBlackoutCount, 1000);
   let pillarKey = '';
   let stateAuthFailed = false;
   let feedStale = false;
@@ -1596,9 +1629,15 @@
     if (plan) renderTrade(data, plan);
     renderLadder(data, plan && Number.isFinite(plan.r) ? plan : null);
     const stopHit = data.stop_hit === true;
-    document.getElementById('overlay-stop').classList.toggle('overlay-active', stopHit);
-    document.getElementById('overlay-done').classList.toggle('overlay-active', !stopHit && dayLock);
-    document.getElementById('app').classList.toggle('lock-dim', stopHit || dayLock);
+    const mode = blackoutMode(data.blackout, { position: Boolean(plan), dayLock, stopHit });
+    document.getElementById('overlay-done').classList.toggle('overlay-active', dayLock);
+    document.getElementById('overlay-stop').classList.toggle('overlay-active', !dayLock && stopHit);
+    document.getElementById('overlay-blackout').classList.toggle('overlay-active', mode === 'overlay');
+    document.getElementById('blackout-banner').hidden = mode !== 'banner';
+    document.getElementById('app').classList.toggle('lock-dim', dayLock || stopHit || mode === 'overlay');
+    blackoutUntil = mode === 'overlay' ? data.blackout.until : null;
+    if (data.blackout?.end) document.getElementById('blackout-end').textContent = data.blackout.end;
+    paintBlackoutCount();
   }
 
   function adoptPosition(position) {
@@ -1622,7 +1661,9 @@
     const left = document.getElementById('risk-left');
     if (!session) {
       realized.textContent = '—';
-      losers.textContent = '0 of 3';
+      losers.textContent = 'losers on this stock: 0 of 3';
+      const blackoutCount = document.getElementById('risk-blackout');
+      if (blackoutCount) blackoutCount.textContent = 'blackout trades today: 0';
       left.textContent = '—';
       const estimated = document.getElementById('risk-estimated');
       if (estimated) estimated.hidden = true;
@@ -1634,6 +1675,8 @@
     if (estimated) estimated.hidden = session.r_estimated !== true;
     const onThis = session.symbol_losers?.[symbol] || 0;
     losers.textContent = `losers on this stock: ${onThis} of 3`;
+    const blackoutCount = document.getElementById('risk-blackout');
+    if (blackoutCount) blackoutCount.textContent = `blackout trades today: ${session.blackout_trades || 0}`;
     if (session.max_loss_unit === 'USD') left.textContent = money(session.max_loss_left);
     else if (Number.isFinite(session.max_loss_left)) left.textContent = `${session.max_loss_left.toFixed(1)}R`;
     else left.textContent = '—';
