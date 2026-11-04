@@ -239,7 +239,8 @@
       font-family: 'Barlow Condensed', sans-serif;
       font-weight: 700;
       font-size: 22px;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.04em;
+      line-height: 1.05;
     }
     #setup-bar { display: flex; gap: 4px; }
     #setup-bar span { flex: 1; height: 5px; border-radius: 3px; background: #2E2E2E; }
@@ -827,13 +828,23 @@
     ].filter(Boolean).length;
   }
 
+  function triggerSubline(setup, price) {
+    const label = setup.trigger_label || '';
+    if (!label) return '';
+    if (!Number.isFinite(setup.trigger) || !Number.isFinite(price)) return label;
+    const cents = Math.round((setup.trigger - price) * 100);
+    const sign = cents > 0 ? '+' : '';
+    return `${sign}${cents}c · ${label}`;
+  }
+
   function renderSetup(data) {
     const setup = data?.setup || {};
     const title = document.getElementById('setup-title');
     const state = setup.state || 'IDLE';
-    title.textContent = state;
+    title.textContent = setup.reason || (state === 'IDLE' ? 'IDLE: needs a new high on volume' : state);
     const aligned = data?.traffic_light_confirmed === 'ALIGNED';
-    let reason = setup.reason || (state === 'IDLE' ? 'Needs a new high on volume.' : '');
+    const named = state === 'ARMED' || state === 'TRIGGERED';
+    let reason = setup.subline || (named ? triggerSubline(setup, data?.context?.price) : '');
     if (state === 'ARMED' && data && !aligned) {
       title.className = 'warn';
       const n = failingCount(data);
@@ -1145,8 +1156,9 @@
     }
     const planLevels = [];
     if (showPlan && Number.isFinite(setup.trigger)) {
-      if (Math.abs(setup.trigger - price) <= EDGE) beside.push({ name: 'TRIGGER', role: 'trigger' });
-      else planLevels.push({ price: setup.trigger, name: 'TRIGGER', color: '#FBBF24', dash: true });
+      const triggerName = setup.trigger_label || 'TRIGGER';
+      if (Math.abs(setup.trigger - price) <= EDGE) beside.push({ name: triggerName, role: 'trigger' });
+      else planLevels.push({ price: setup.trigger, name: triggerName, color: '#FBBF24', dash: true });
     }
     if (showPlan && Number.isFinite(setup.stop)) {
       if (Math.abs(setup.stop - price) <= EDGE) beside.push({ name: 'STOP', role: 'stop' });

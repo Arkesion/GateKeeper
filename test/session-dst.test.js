@@ -101,8 +101,16 @@ test('BRAI recompute values stay the same after the formatter change', () => {
     dailyCandles: [],
     quoteFetched: true
   };
-  const state = computeStateFromCache('BRAI');
+  const clock = Date.now;
+  Date.now = () => now;
+  let state;
+  try {
+    state = computeStateFromCache('BRAI');
+  } finally {
+    Date.now = clock;
+  }
   assert.equal(state.traffic_light_raw, 'NOT_ALIGNED');
+  // 63474da: 4.92 is VWAP from 9:30. The same bars on the 4:00 series are 4.88.
   assert.equal(state.context.vwap_value, 4.92);
   assert.equal(state.context.ema9_1m_value, 4.59);
   assert.equal(state.context.ema20_1m_value, 4.64);
