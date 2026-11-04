@@ -947,6 +947,92 @@
     return { lo, hi };
   }
 
+  function inTradeWindow(price, entry, stop, oneR) {
+    const MAX = 0.60;
+    const MIN = 0.15;
+    const PAD = 0.02;
+    if (!Number.isFinite(entry) || !Number.isFinite(stop)) return null;
+    let lo = Math.min(entry, stop);
+    let hi = Math.max(entry, stop);
+    const widen = (level) => {
+      if (!Number.isFinite(level)) return;
+      const nextLo = Math.min(lo, level);
+      const nextHi = Math.max(hi, level);
+      if (nextHi - nextLo <= MAX + 1e-9) {
+        lo = nextLo;
+        hi = nextHi;
+      }
+    };
+    widen(oneR);
+    widen(price);
+    lo -= PAD;
+    hi += PAD;
+    if (hi - lo > MAX) {
+      const extra = (hi - lo - MAX) / 2;
+      lo += extra;
+      hi -= extra;
+    }
+    if (hi - lo < MIN) {
+      const mid = (lo + hi) / 2;
+      lo = mid - MIN / 2;
+      hi = mid + MIN / 2;
+    }
+    return { lo, hi };
+  }
+
+  function pathCallout(entry, r, levels) {
+    const groups = {
+      'entry and 1R': [],
+      '1R and 2R': [],
+      '2R and 3R': []
+    };
+    const pathTop = entry + 3 * r;
+    const rows = [];
+    if (Number.isFinite(entry) && r > 0) {
+      for (let dollar = Math.ceil((entry + 1e-9) * 2) / 2; dollar < pathTop - 1e-9; dollar = Math.round((dollar + 0.5) * 100) / 100) {
+        rows.push({ name: `$${dollar.toFixed(2)}`, price: Math.round(dollar * 100) / 100 });
+      }
+    }
+    for (const level of levels || []) rows.push(level);
+    const seen = new Set();
+    if (Number.isFinite(entry) && Number.isFinite(pathTop) && r > 0) {
+      for (const level of rows) {
+        const price = Number(level?.price);
+        if (!Number.isFinite(price) || price <= entry || price >= pathTop) continue;
+        const key = `${level.name}|${price.toFixed(2)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const dist = (price - entry) / r;
+        const band = dist < 1 ? 'entry and 1R' : dist < 2 ? '1R and 2R' : '2R and 3R';
+        const shown = String(level.name).startsWith('$') ? level.name : `${level.name} ${price.toFixed(2)}`;
+        groups[band].push(shown);
+      }
+    }
+    const sentences = [];
+    for (const [band, items] of Object.entries(groups)) {
+      if (!items.length) continue;
+      const list = items.length === 1
+        ? items[0]
+        : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+      sentences.push(`${list} ${items.length === 1 ? 'sits' : 'sit'} between ${band}`);
+    }
+    return sentences.length
+      ? `${sentences.join('. ')}.`
+      : 'No structure between entry and 3R.';
+  }
+
+  function exitToppingTail(notes, openedAt) {
+    const tails = (notes || []).filter(note =>
+      note?.text === 'Topping tail' && Number.isFinite(note.datetime)
+    );
+    const live = tails.filter(note =>
+      !Number.isFinite(openedAt) || note.datetime + 60000 >= openedAt
+    );
+    if (!live.length) return null;
+    live.sort((a, b) => b.datetime - a.datetime);
+    return live[0].time || null;
+  }
+
   function zoomFor(price, levels) {
     if (!Number.isFinite(price)) return view;
     view = zoomWindow(price, levels);
@@ -1049,18 +1135,13 @@
       Number.isFinite(price) ? Math.floor((price - 1e-6) / step) * step : null,
       Number.isFinite(price) ? Math.ceil((price + 1e-6) / step) * step : null
     ];
-    if (trade && trade.r > 0) {
+    let box;
+    if (trade && trade.r > 0 && Number.isFinite(trade.entry) && Number.isFinite(trade.stop)) {
       const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
-      zoomLevels.push(trade.stop, trade.entry, basis + trade.r, basis + 2 * trade.r, basis + 3 * trade.r);
-    }
-    let box = zoomFor(price, zoomLevels);
-    if (trade && trade.r > 0 && box) {
-      const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
-      const wantLo = Math.min(trade.stop, price) - 0.02;
-      const wantHi = basis + 3 * trade.r + 0.02;
-      if (wantHi - wantLo <= 0.60) {
-        box = { lo: Math.min(box.lo, wantLo), hi: Math.max(box.hi, wantHi) };
-      }
+      box = inTradeWindow(price, trade.entry, trade.stop, basis + trade.r);
+      view = box;
+    } else {
+      box = zoomFor(price, zoomLevels);
     }
     document.getElementById('ladder-range').textContent = trade
       ? 'structure left · your levels right'
@@ -1118,6 +1199,22 @@
     if (box && Number.isFinite(pullback) && pullback < box.lo) {
       lowLines.push(`↓ Pullback low ${money(pullback)} · ${cents(pullback - price)}`);
     }
+    if (trade && box && trade.r > 0) {
+      const basis = Number.isFinite(trade.basis) ? trade.basis : trade.entry;
+      const outsideTrade = [
+        ['3R', basis + 3 * trade.r],
+        ['2R', basis + 2 * trade.r],
+        ['1R', basis + trade.r],
+        ['ENTRY', trade.entry],
+        ['STOP', trade.stop]
+      ];
+      for (const [label, level] of outsideTrade) {
+        if (!Number.isFinite(level) || (level >= box.lo && level <= box.hi)) continue;
+        const line = `${label} ${px(level)} · ${cents(level - price)}`;
+        if (level > box.hi) highLines.push(`↑ ${line}`);
+        else lowLines.push(`↓ ${line}`);
+      }
+    }
     highEdge.hidden = highLines.length === 0;
     lowEdge.hidden = lowLines.length === 0;
     highEdge.textContent = highLines.join('\n');
@@ -1134,9 +1231,10 @@
       const red = document.createElement('div');
       red.className = 'band';
       red.style.background = 'rgba(242,73,92,0.35)';
-      const top = yOf(trade.basis + 3 * trade.r, box, height);
-      const entryY = yOf(trade.entry, box, height);
-      const stopY = yOf(trade.stop, box, height);
+      const cap = (level) => Math.min(box.hi, Math.max(box.lo, level));
+      const top = yOf(cap(trade.basis + 3 * trade.r), box, height);
+      const entryY = yOf(cap(trade.entry), box, height);
+      const stopY = yOf(cap(trade.stop), box, height);
       green.style.top = `${Math.min(top, entryY)}px`;
       green.style.height = `${Math.abs(entryY - top)}px`;
       red.style.top = `${Math.min(entryY, stopY)}px`;
@@ -1292,6 +1390,7 @@
       basis,
       stop: pos.stop,
       r: pos.r,
+      openedAt: pos.opened_at,
       shares: pos.shares,
       pullback: pos.pullback_low,
       source: pos.pullback_source
@@ -1353,47 +1452,26 @@
       `stop = max(pullback low ${pb} − 1¢, entry − 20¢)${rebuilt}`;
 
     const ctx = data.context || {};
-    const structure = [
+    const pathLevels = [
       ['VWAP', ctx.vwap_value],
-      ['Resistance', ctx.key_level_up?.price],
       ['9 EMA', ctx.ema9_1m_value],
       ['20 EMA', ctx.ema20_1m_value],
-      ['Support', ctx.key_level_down?.price]
-    ];
-    const groups = {
-      'entry and 1R': [],
-      '1R and 2R': [],
-      '2R and 3R': []
-    };
-    const pathTop = plan.basis + 3 * plan.r;
-    if (Number.isFinite(plan.entry) && Number.isFinite(pathTop) && plan.r > 0) {
-      for (const [label, level] of structure) {
-        if (!Number.isFinite(level) || level <= plan.entry || level >= pathTop) continue;
-        const dist = (level - plan.entry) / plan.r;
-        const band = dist < 1 ? 'entry and 1R' : dist < 2 ? '1R and 2R' : '2R and 3R';
-        const name = label === 'VWAP' ? 'VWAP' : label.toLowerCase();
-        groups[band].push(`${name} ${px(level)}`);
-      }
+      ['high of day', ctx.session_high],
+      ['low of day', ctx.session_low],
+      ['daily resistance', ctx.daily_resistance?.price]
+    ].filter(([, level]) => Number.isFinite(level)).map(([name, level]) => ({ name, price: level }));
+    for (const pivot of ctx.pivots || []) {
+      if (Number.isFinite(pivot?.price)) pathLevels.push({ name: 'pivot', price: pivot.price });
     }
-    const sentences = [];
-    for (const [band, items] of Object.entries(groups)) {
-      if (!items.length) continue;
-      const list = items.length === 1
-        ? items[0]
-        : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-      sentences.push(`${list} ${items.length === 1 ? 'sits' : 'sit'} between ${band}`);
-    }
-    document.getElementById('path-text').textContent = sentences.length
-      ? sentences.join('. ') + '.'
-      : 'No structure between entry and 3R.';
+    document.getElementById('path-text').textContent = pathCallout(plan.basis, plan.r, pathLevels);
 
     const oneR = Number.isFinite(plan.basis) && Number.isFinite(plan.r) ? plan.basis + plan.r : null;
     const away = Number.isFinite(oneR) && Number.isFinite(price) ? oneR - price : null;
-    const tail = (data.notes || []).find(note => note.text === 'Topping tail');
+    const tailTime = exitToppingTail(data.notes, plan.openedAt);
     const lost = Number.isFinite(price) && Number.isFinite(ctx.ema9_1m_value) && price < ctx.ema9_1m_value;
     const rows = [
       ['1R reached', Number.isFinite(away) && away <= 0 ? 'reached' : (Number.isFinite(away) ? `not yet · ${cents(-away).replace('−', '')} away` : '—')],
-      ['Topping tail', tail ? `${tail.time}` : 'none'],
+      ['Topping tail', tailTime || 'none'],
       ['Lost 9 EMA', lost ? 'lost' : 'holding'],
       ['Tape', (data.provider || dataProvider) === 'schwab' ? 'n/a in Schwab mode' : (data.tape ? data.tape.text : '—')]
     ];

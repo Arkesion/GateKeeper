@@ -70,6 +70,7 @@ test('entry, stop, and R come from the fill and stay frozen after an add', () =>
   assert.equal(session.open.stop, 3.89);
   assert.equal(session.open.r, 0.11);
   assert.equal(session.open.frozen_entry, 4);
+  assert.equal(viewOf(session, 4.10, NOW, opts).position.opened_at, NOW);
 });
 
 test('partial fills average and the stop stays on the first price', () => {

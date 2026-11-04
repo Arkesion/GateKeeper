@@ -18,6 +18,7 @@ from events import (
     order_event_line,
     next_rate_delay,
     parse_order_event,
+    has_open_position,
     parse_positions,
     poll_interval_seconds,
     retry_after_seconds,
@@ -73,6 +74,12 @@ class ParseEventsTest(unittest.TestCase):
             ]
         })
         self.assertEqual(rows, [{"symbol": "TNMG", "shares": 1, "average": 4.20}])
+
+    def test_open_position_refuses_and_an_empty_list_does_not(self):
+        self.assertFalse(has_open_position([]))
+        self.assertFalse(has_open_position(None))
+        self.assertFalse(has_open_position([{"symbol": "CHSN", "shares": 0}]))
+        self.assertTrue(has_open_position([{"symbol": "CHSN", "shares": 100, "average": 4.09}]))
 
     def test_account_id_is_not_the_display_number(self):
         rows = parse_account_list({

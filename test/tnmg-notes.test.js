@@ -18,6 +18,9 @@ const {
   pricePillLabel,
   activeEvent,
   zoomWindow,
+  inTradeWindow,
+  pathCallout,
+  exitToppingTail,
   macdGospelPositive,
   buildNotes,
   relativeVolume,
@@ -270,6 +273,33 @@ test('zoom keeps price in the middle and includes a nearby level', () => {
   const far = zoomWindow(3.54, [5.00]);
   assert.ok(far.hi < 5);
   assert.ok(far.hi - far.lo <= 0.60 + 1e-9);
+});
+
+test('an open trade window keeps entry, stop, and 1R, and leaves 2R outside', () => {
+  const box = inTradeWindow(4.09, 4.09, 3.89, 4.29);
+  assert.ok(box.lo <= 3.89);
+  assert.ok(box.hi >= 4.29);
+  assert.ok(box.hi < 4.49);
+  assert.ok(box.hi < 4.69);
+  assert.ok(box.hi - box.lo <= 0.60 + 1e-9);
+  const wide = inTradeWindow(4.09, 4.09, 3.50, 4.29);
+  assert.ok(wide.hi < 4.29);
+  assert.ok(wide.lo <= 3.50 && wide.hi >= 4.09);
+});
+
+test('high of day between 1R and 2R is named, and so is a half dollar', () => {
+  const text = pathCallout(4.09, 0.20, [{ name: 'high of day', price: 4.40 }]);
+  assert.match(text, /high of day 4\.40 sits between 1R and 2R/);
+  assert.match(text, /\$4\.50 sits between 2R and 3R/);
+  assert.equal(pathCallout(4.09, 0.20, []), '$4.50 sits between 2R and 3R.');
+});
+
+test('a topping tail that closed before entry is not an exit warning', () => {
+  const opened = Date.parse('2026-11-04T14:10:00.000Z');
+  const early = { text: 'Topping tail', time: '07:18', datetime: opened - 2 * 60 * 60000 };
+  const later = { text: 'Topping tail', time: '09:12', datetime: opened };
+  assert.equal(exitToppingTail([early], opened), null);
+  assert.equal(exitToppingTail([early, later], opened), '09:12');
 });
 
 test('11:10 volume and body chips cite that bar separately', () => {

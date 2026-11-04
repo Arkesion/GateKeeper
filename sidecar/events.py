@@ -120,6 +120,21 @@ def parse_positions(payload):
     return out
 
 
+def has_open_position(rows):
+    if not isinstance(rows, list):
+        return False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            shares = float(row.get("shares") or 0)
+        except (TypeError, ValueError):
+            continue
+        if shares > 0:
+            return True
+    return False
+
+
 def publish_fill(redis_client, fill):
     redis_client.rpush("gk:fills", json.dumps(fill))
     redis_client.ltrim("gk:fills", -200, -1)

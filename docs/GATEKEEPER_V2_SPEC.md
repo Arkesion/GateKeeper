@@ -151,7 +151,7 @@ High-volume sell, large sell candle and topping tail: Ross's videos, per Kevin; 
 
 **Ladder levels.** Price is always its own blue pill. A level within 2¢ of price is not a separate row; one level name sits beside the pill, in order resistance, support, VWAP, EMA, and `+N` if more. The full list is the hover. The 9 EMA line is cyan and the 20 EMA line is magenta. Green and red are only support and resistance. Half- and whole-dollar lines in the zoomed range are faint. Cent distances are in the row hover, not on the row. The right edge is a price axis: ticks every 5¢ when the span is 30¢ or less, otherwise every 10¢, plus a colored tag for each level (price blue, resistance red, support green, VWAP orange, 9 EMA cyan, 20 EMA magenta). Names stay on the left.
 
-**Auto-zoom.** The window includes the nearest meaningful level above and below price: the support and resistance pivots, VWAP, the 9 and 20 EMA, high of day, low of day, and the nearest half or whole dollar. The span is at least 15¢ and at most 60¢. A level past that becomes an edge marker. Price stays in the middle 60% of the window.
+**Auto-zoom.** The window includes the nearest meaningful level above and below price: the support and resistance pivots, VWAP, the 9 and 20 EMA, high of day, low of day, and the nearest half or whole dollar. The span is at least 15¢ and at most 60¢. A level past that becomes an edge marker. Price stays in the middle 60% of the window. In trade the window is anchored on entry and stop, and it includes 1R when that span is still at most 60¢. 2R, 3R, and any other level outside that window are edge markers. Entry is a white line, the stop is red, and 1R, 2R, and 3R are green, labeled on the right.
 
 **Low of day.** The low is the minimum low from 4:00 ET, including premarket. In range it is a ladder line named `Low of day`. Below the range it is a bottom edge marker, `↓ Low of day $3.64 · −18¢`, the same shape as high of day.
 
@@ -184,6 +184,8 @@ A BUY that opens or adds to a position on any symbol switches the rail to in-tra
 **Entry.** Entry is the average fill price across partial fills and adds. Shares are the position size. Dollar P&L is `(last − average) × shares`. R P&L uses that average against the frozen R below.
 
 **Stop and R math.** The stop is frozen when the position goes from flat to long, and it does not move after that. Later adds change the average entry and the share count only. The 1R, 2R, and 3R prices stay on the right side of the ladder with the frozen stop. The formula line stays on the position card.
+
+**In your path.** The callout names high of day, low of day, VWAP, pivot highs and lows, each half and whole dollar, daily resistance, and the 9 and 20 EMA when that price is strictly above entry and strictly below 3R.
 
 ```latex
 \text{stop} = \max(\text{pullback\_low} - 0.01,\ \text{entry} - 0.20)
@@ -227,7 +229,7 @@ Tape slowdown is the only Phase 6 warning. The ask wall is dropped: Nasdaq Basic
 | --- | --- | --- |
 | Tape slowdown | After a surge, the trailing 15-s Nasdaq print rate and buy-side size are both under `tapeSlowdownRatio` (40%) of that surge leg's peak 15 s. The line reads `! Tape at 35% of peak`, using the print-rate percent. The hover says prints per second and buy volume over the last 15 s versus the surge peak, measured on Nasdaq prints only. | Gap and Go exit 2: buying slowdown on T&S |
 | First red 5-min | First red 5-min candle after entry | Gap and Go exit 3 |
-| Topping tail | 1-min upper wick over 2× body near highs | v1 bearish note |
+| Topping tail | 1-min upper wick over 2× body near highs. The exit card counts a bar only when that bar closed at or after the entry. The event list still shows an earlier tail. | v1 bearish note |
 | Lost 9 EMA | 1-min close under the 9 EMA | v1 bearish note |
 | 1R reached | Price touches 1R | MY OWN: Ross sells most into the first target |
 
