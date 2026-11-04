@@ -348,6 +348,7 @@
   </header>
   <p id="account-note" class="account-note" hidden></p>
   <p id="fills-note" class="account-note bad" hidden></p>
+  <p id="symbol-lock" class="account-note bad" hidden></p>
 
   <section id="verdict" aria-label="Alignment">
     <div class="banner-row">
@@ -451,6 +452,7 @@
   let dataProvider = '';
   let marketSession = '';
   let openPositionSymbol = '';
+  let lockedSymbols = [];
   let pillarKey = '';
   let stateAuthFailed = false;
   let feedStale = false;
@@ -542,7 +544,8 @@
         res.near ? 1 : 0,
         res.label,
         res.pct,
-        openPositionSymbol === name ? 1 : 0
+        openPositionSymbol === name ? 1 : 0,
+        lockedSymbols.includes(name) ? 1 : 0
       ].join(':');
     });
     return `${rows.join('|')}|${adding ? 1 : 0}`;
@@ -587,8 +590,10 @@
     x.tabIndex = 0;
     x.setAttribute('role', 'button');
     x.setAttribute('aria-label', `Remove ${name}`);
-    const blocked = openPositionSymbol === name;
-    if (blocked) x.title = 'Open position — close it before removing';
+    const locked = lockedSymbols.includes(name);
+    const blocked = openPositionSymbol === name || locked;
+    if (openPositionSymbol === name) x.title = 'Open position — close it before removing';
+    if (locked) x.hidden = true;
     const onRemove = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -632,6 +637,13 @@
       daily.style.color = cached.daily_resistance.near ? '#FBBF24' : '#737373';
       daily.textContent = `Daily res. ${px(cached.daily_resistance.price)} · ${cached.daily_resistance.label || ('+' + cached.daily_resistance.pct + '%')}`;
       btn.append(daily);
+    }
+    if (locked) {
+      const done = document.createElement('span');
+      done.className = 'px';
+      done.style.color = '#F2495C';
+      done.textContent = `DONE WITH ${name} TODAY`;
+      btn.append(done);
     }
     btn.addEventListener('click', (event) => {
       if (event.target.closest('.x')) return;
@@ -1535,6 +1547,38 @@
     if (data.provider) dataProvider = data.provider;
     if (data.market_session) marketSession = data.market_session;
     openPositionSymbol = data.position?.symbol ? String(data.position.symbol).toUpperCase() : '';
+    lockedSymbols = Array.isArray(data.session?.locked_symbols) ? data.session.locked_symbols : [];
+    let pinned = false;
+    for (const name of lockedSymbols) {
+      if (pillars.includes(name)) continue;
+      while (pillars.length >= 3) {
+        const drop = pillars.find(item => !lockedSymbols.includes(item));
+        if (!drop) break;
+        pillars = pillars.filter(item => item !== drop);
+      }
+      if (pillars.length < 3) {
+        pillars.push(name);
+        pinned = true;
+      }
+    }
+    if (pinned) savePillars();
+    const lockNote = document.getElementById('symbol-lock');
+    const lockedHere = lockedSymbols.includes(symbol);
+    if (lockNote) {
+      lockNote.hidden = !lockedHere;
+      lockNote.textContent = lockedHere ? `DONE WITH ${symbol} TODAY` : '';
+    }
+    const title = document.getElementById('position-title');
+    if (data.exit?.status === 'unconfirmed') {
+      title.textContent = 'EXITED · fill unconfirmed';
+      title.style.color = '#FBBF24';
+    } else if (data.exit?.status === 'confirming') {
+      title.textContent = 'EXITED · confirming fill';
+      title.style.color = '#FBBF24';
+    } else {
+      title.textContent = 'IN TRADE';
+      title.style.color = '';
+    }
     renderLiveAge();
     renderPillars();
     renderVerdict(data);
@@ -1562,7 +1606,7 @@
     if (!sym || sym === symbol) return;
     if (!pillars.includes(sym)) {
       while (pillars.length >= 3) {
-        const drop = pillars.find(name => name !== sym);
+        const drop = pillars.find(name => name !== sym && !lockedSymbols.includes(name));
         if (!drop) break;
         pillars = pillars.filter(name => name !== drop);
       }
@@ -1588,7 +1632,8 @@
     realized.style.color = (session.realized_usd || 0) < 0 ? '#F2495C' : '#1FC08A';
     const estimated = document.getElementById('risk-estimated');
     if (estimated) estimated.hidden = session.r_estimated !== true;
-    losers.textContent = `${session.streak || 0} of 3`;
+    const onThis = session.symbol_losers?.[symbol] || 0;
+    losers.textContent = `losers on this stock: ${onThis} of 3`;
     if (session.max_loss_unit === 'USD') left.textContent = money(session.max_loss_left);
     else if (Number.isFinite(session.max_loss_left)) left.textContent = `${session.max_loss_left.toFixed(1)}R`;
     else left.textContent = '—';

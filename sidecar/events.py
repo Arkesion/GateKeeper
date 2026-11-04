@@ -334,6 +334,34 @@ def day_lots(rows):
     return lots
 
 
+def published_order_ids(lots):
+    return {str(lot.get("order_id")) for lot in lots or [] if lot.get("order_id")}
+
+
+def new_closing_sell(lots, symbol, known_ids):
+    name = str(symbol or "").upper()
+    known = {str(item) for item in (known_ids or set())}
+    for lot in lots or []:
+        if str(lot.get("symbol") or "").upper() != name or lot.get("side") != "SELL":
+            continue
+        order_id = str(lot.get("order_id") or "")
+        if not order_id or order_id in known:
+            continue
+        return lot
+    return None
+
+
+def chase_exit(symbol, known_ids, fetch, sleep, retries=3):
+    """One history read now, then `retries` more, two seconds apart."""
+    for attempt in range(retries + 1):
+        if attempt:
+            sleep(2)
+        lots = fetch()
+        if lots is not None and new_closing_sell(lots, symbol, known_ids):
+            return "found", lots
+    return "unconfirmed", None
+
+
 def recent_fill_line(rows):
     if not rows:
         return "recent fill count=0 last=none"
@@ -851,6 +879,43 @@ def run_account(stop_event, redis_client, token_dir, account_id):
     threading.Thread(target=subscribe, name="grpc-events", daemon=True).start()
     threading.Thread(target=alive_loop, name="grpc-alive", daemon=True).start()
     poll_failures = 0
+    held_symbols = set()
+    chasing = set()
+
+    def begin_exit_chase(symbol, known_ids):
+        if symbol in chasing:
+            return
+        chasing.add(symbol)
+
+        def run():
+            try:
+                watch["exit"] = {"symbol": symbol, "status": "confirming"}
+                publish()
+
+                def fetch():
+                    try:
+                        if reader is None:
+                            return None
+                        fills, status, _retry = read_recent_fills(reader, account_id)
+                    except Exception:
+                        return None
+                    if status == 429 or fills is None:
+                        return None
+                    lots = day_lots(fills)
+                    redis_client.set("gk:day_fills", json.dumps(lots))
+                    return lots
+
+                outcome, _lots = chase_exit(symbol, known_ids, fetch, stop_event.wait)
+                if outcome == "found" and watch.get("exit", {}).get("symbol") == symbol:
+                    watch.pop("exit", None)
+                elif outcome != "found":
+                    watch["exit"] = {"symbol": symbol, "status": "unconfirmed"}
+                publish()
+            finally:
+                chasing.discard(symbol)
+
+        threading.Thread(target=run, name="exit-chase", daemon=True).start()
+
     while not stop_event.is_set():
         started = time.monotonic()
         try:
@@ -881,6 +946,21 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                 publish_positions(redis_client, rows)
                 symbols = ",".join(row["symbol"] for row in rows) or "none"
                 LOG.info("positions poll %s open %s", len(rows), symbols)
+                current = {row["symbol"] for row in rows}
+                if watch.get("exit") and watch["exit"].get("symbol") in current:
+                    watch.pop("exit", None)
+                    publish()
+                gone = held_symbols - current
+                held_symbols.clear()
+                held_symbols.update(current)
+                if gone:
+                    raw = redis_client.get("gk:day_fills")
+                    try:
+                        known = published_order_ids(json.loads(raw) if raw else [])
+                    except (TypeError, ValueError):
+                        known = set()
+                    for symbol in sorted(gone):
+                        begin_exit_chase(symbol, known)
         except Exception as exc:
             LOG.info("positions poll failed: %s", type(exc).__name__)
             reader = None

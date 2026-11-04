@@ -464,6 +464,106 @@ test('a 429 backoff shows FILLS DELAYED until the poll is 10 seconds late', () =
   assert.equal(never.text, 'FILLS OFFLINE');
 });
 
+test('a flat poll leaves the rail confirming before the 09:15:48 sell', () => {
+  const opts = tempOpts();
+  const openAt = Date.parse('2026-11-04T14:07:20.000Z');
+  const sellAt = Date.parse('2026-11-04T14:15:48.086Z');
+  const flatAt = sellAt + 1000;
+  const early = [
+    { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.06, ts: Date.parse('2026-11-04T14:06:11.000Z'), order_id: 'b1' },
+    { symbol: 'CHSN', side: 'SELL', shares: 1, price: 3.93, ts: Date.parse('2026-11-04T14:06:14.000Z'), order_id: 's1' }
+  ];
+  const held = applyMarket({
+    symbol: 'CHSN',
+    now: openAt,
+    lastBarLow: 3.90,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'CHSN', shares: 1, average: 4.09 }],
+      fills: [{ id: 'b2', symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.09, ts: openAt }],
+      dayFills: early
+    }
+  }, opts);
+  assert.equal(held.position.symbol, 'CHSN');
+  assert.equal(held.exit, null);
+  const mid = applyMarket({
+    symbol: 'CHSN',
+    now: flatAt,
+    price: 3.91,
+    lastBarLow: 3.90,
+    account: { status: 'ok', positions: [], dayFills: early }
+  }, opts);
+  assert.ok(flatAt - sellAt < 3000);
+  assert.equal(mid.exit.status, 'confirming');
+  assert.equal(mid.position.symbol, 'CHSN');
+  const waiting = applyMarket({
+    symbol: 'CHSN',
+    now: flatAt + 500,
+    price: 3.91,
+    account: {
+      status: 'ok',
+      positions: [],
+      dayFills: early,
+      exit: { symbol: 'CHSN', status: 'unconfirmed' }
+    }
+  }, opts);
+  assert.equal(waiting.exit.status, 'unconfirmed');
+  assert.equal(waiting.position.symbol, 'CHSN');
+  const done = applyMarket({
+    symbol: 'CHSN',
+    now: flatAt + 800,
+    price: 3.91,
+    account: {
+      status: 'ok',
+      positions: [],
+      dayFills: early.concat([
+        { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.09, ts: openAt, order_id: 'b2' },
+        { symbol: 'CHSN', side: 'SELL', shares: 1, price: 3.91, ts: sellAt, order_id: 's2' }
+      ])
+    }
+  }, opts);
+  assert.equal(done.position, null);
+  assert.equal(done.exit, null);
+  const lines = fs.readFileSync(opts.tradeLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(lines[lines.length - 1].exit, 3.91);
+  assert.equal(done.session.symbol_losers.CHSN, 2);
+});
+
+test('CHSN today is two losers, a third locks the symbol, and a scratch does not', () => {
+  const opts = tempOpts();
+  const lots = [
+    { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.06, ts: Date.parse('2026-11-04T14:06:11.000Z'), order_id: 'b1' },
+    { symbol: 'CHSN', side: 'SELL', shares: 1, price: 3.93, ts: Date.parse('2026-11-04T14:06:14.000Z'), order_id: 's1' },
+    { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.09, ts: Date.parse('2026-11-04T14:07:20.000Z'), order_id: 'b2' },
+    { symbol: 'CHSN', side: 'SELL', shares: 1, price: 3.91, ts: Date.parse('2026-11-04T14:15:48.086Z'), order_id: 's2' }
+  ];
+  const now = lots[3].ts + 1000;
+  const session = loadSession(now, opts);
+  const rebuilt = rebuildFromFills(session, lots, now, opts);
+  assert.equal(rebuilt.changed, true);
+  assert.equal(session.symbol_losers.CHSN, 2);
+  assert.deepEqual(viewOf(session, null, now, opts).session.locked_symbols, []);
+  saveSession(session, opts);
+  const restored = loadSession(now, opts);
+  assert.equal(restored.symbol_losers.CHSN, 2);
+  const again = rebuildFromFills(restored, lots, now, opts);
+  assert.equal(again.changed, false);
+  assert.equal(restored.symbol_losers.CHSN, 2);
+  const scratch = lots.concat([
+    { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.00, ts: now + 1000, order_id: 'b3' },
+    { symbol: 'CHSN', side: 'SELL', shares: 1, price: 4.005, ts: now + 2000, order_id: 's3' }
+  ]);
+  rebuildFromFills(restored, scratch, now + 2000, opts);
+  assert.equal(restored.symbol_losers.CHSN, 2);
+  const third = scratch.concat([
+    { symbol: 'CHSN', side: 'BUY', shares: 1, price: 4.10, ts: now + 3000, order_id: 'b4' },
+    { symbol: 'CHSN', side: 'SELL', shares: 1, price: 3.90, ts: now + 4000, order_id: 's4' }
+  ]);
+  rebuildFromFills(restored, third, now + 4000, opts);
+  assert.equal(restored.symbol_losers.CHSN, 3);
+  assert.deepEqual(viewOf(restored, null, now + 4000, opts).session.locked_symbols, ['CHSN']);
+});
+
 test('failing checks are the red chips only', () => {
   assert.deepEqual(failingChecks(
     { macd: false, no_hv_sell: true, no_big_red: true, no_topping_tail: false, spread_ok: true },

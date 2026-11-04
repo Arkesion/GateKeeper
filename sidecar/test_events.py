@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from events import (
     ORDER_SUBSCRIBE_TYPE,
     classify_event_log,
+    chase_exit,
     day_lots,
     raw_event_line,
     remember_secret,
@@ -80,6 +81,44 @@ class ParseEventsTest(unittest.TestCase):
         self.assertFalse(has_open_position(None))
         self.assertFalse(has_open_position([{"symbol": "CHSN", "shares": 0}]))
         self.assertTrue(has_open_position([{"symbol": "CHSN", "shares": 100, "average": 4.09}]))
+
+    def test_exit_chase_finds_a_new_sell_and_stops_after_three_retries(self):
+        old = {"symbol": "CHSN", "side": "SELL", "order_id": "old-sell", "shares": 1, "price": 3.93, "ts": 1}
+        new = {"symbol": "CHSN", "side": "SELL", "order_id": "new-sell", "shares": 1, "price": 3.91, "ts": 2}
+        immediate = {"n": 0}
+
+        def fetch_now():
+            immediate["n"] += 1
+            return [old, new]
+
+        sleeps = []
+        status, lots = chase_exit("CHSN", {"old-sell"}, fetch_now, sleeps.append)
+        self.assertEqual(status, "found")
+        self.assertEqual(sleeps, [])
+        self.assertEqual(immediate["n"], 1)
+        self.assertIn(new, lots)
+
+        late = {"n": 0}
+
+        def fetch_late():
+            late["n"] += 1
+            if late["n"] < 4:
+                return [old]
+            return [old, new]
+
+        waited = []
+        status, _lots = chase_exit("CHSN", {"old-sell"}, fetch_late, waited.append)
+        self.assertEqual(status, "found")
+        self.assertEqual(waited, [2, 2, 2])
+
+        def fetch_never():
+            return [old]
+
+        gave_up = []
+        status, missed = chase_exit("CHSN", {"old-sell"}, fetch_never, gave_up.append)
+        self.assertEqual(status, "unconfirmed")
+        self.assertIsNone(missed)
+        self.assertEqual(gave_up, [2, 2, 2])
 
     def test_account_id_is_not_the_display_number(self):
         rows = parse_account_list({
