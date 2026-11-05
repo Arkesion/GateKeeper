@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const store = require('../lib/store');
-const { computeStateFromCache } = require('../lib/state');
+const { computeStateFromCache, readWatchlist, writeWatchlist } = require('../lib/state');
 const {
   utcFromEtDateTime,
   boundsForDate,
@@ -14,7 +14,8 @@ const {
   getEtMinutes,
   getVwapConfig,
   openingBlackout,
-  blackoutMode
+  blackoutMode,
+  applyClock
 } = require('../lib/session');
 
 const SESSIONS = {
@@ -99,6 +100,60 @@ test('the opening blackout runs 09:25 through 09:35 on a trading day only', () =
   }
   assert.equal(openingBlackout(utcFromEtDateTime('2026-11-07', 9, 30)), null);
   assert.equal(openingBlackout(utcFromEtDateTime('2026-11-26', 9, 30)), null);
+});
+
+test('an open page picks up the blackout on the next poll and clears at 09:35', () => {
+  const cfg = { start: '09:25', end: '09:35' };
+  for (const date of ['2026-11-05', '2026-10-30']) {
+    const loadedAt = utcFromEtDateTime(date, 9, 24) + 50000;
+    const loaded = applyClock({ status: 'data_stale' }, loadedAt, cfg);
+    assert.equal(loaded.blackout.active, false);
+    assert.equal(loaded.market_session, 'PRE');
+    assert.equal(blackoutMode(loaded.blackout, {}, loadedAt), null);
+    const seenAt = utcFromEtDateTime(date, 9, 25) + 1000;
+    const seen = applyClock({ status: 'data_stale' }, seenAt, cfg);
+    assert.equal(seen.blackout.active, true);
+    assert.equal(seen.blackout.ends_at, utcFromEtDateTime(date, 9, 35));
+    assert.equal(blackoutMode(seen.blackout, {}, seenAt), 'overlay');
+    assert.equal(blackoutMode(seen.blackout, { position: true }, seenAt), 'banner');
+    const end = utcFromEtDateTime(date, 9, 35);
+    assert.equal(blackoutMode(seen.blackout, {}, end), null);
+    const cleared = applyClock(seen, end, cfg);
+    assert.equal(cleared.blackout.active, false);
+    assert.equal(applyClock({ status: 'ok' }, utcFromEtDateTime(date, 9, 30), cfg).market_session, 'RTH');
+  }
+  const until = utcFromEtDateTime('2026-11-06', 4, 0);
+  const locked = applyClock({
+    status: 'ok',
+    session: { lockout: 'day', lockout_reason: 'r', lockout_until: until }
+  }, utcFromEtDateTime('2026-11-05', 15, 0), cfg);
+  assert.equal(locked.session.lockout, 'day');
+  const reset = applyClock({
+    status: 'ok',
+    session: { lockout: 'day', lockout_reason: 'r', lockout_until: until }
+  }, until, cfg);
+  assert.equal(reset.session.lockout, null);
+  assert.equal(reset.session.lockout_reason, null);
+});
+
+test('the watch list lives in redis and starts empty', async () => {
+  const saved = new Map();
+  const redis = {
+    async get(key) { return saved.has(key) ? saved.get(key) : null; },
+    async set(key, value) { saved.set(key, value); }
+  };
+  assert.deepEqual(await readWatchlist(redis), []);
+  assert.deepEqual(await writeWatchlist(redis, ['vcig', 'CHSN', 'bad symbol', 'VCIG']), ['VCIG', 'CHSN']);
+  assert.deepEqual(await readWatchlist(redis), ['VCIG', 'CHSN']);
+  assert.deepEqual(await writeWatchlist(redis, ['CHSN']), ['CHSN']);
+  assert.deepEqual(await readWatchlist(redis), ['CHSN']);
+  assert.deepEqual(await writeWatchlist(redis, [], ['CHSN']), ['CHSN']);
+  assert.deepEqual(await writeWatchlist(redis, []), []);
+  const page = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+  assert.equal(page.includes('VCIG'), false);
+  assert.equal(page.includes('localStorage.getItem'), false);
+  assert.equal(page.includes('localStorage.setItem'), false);
+  assert.equal(page.includes('+ ADD TICKER'), true);
 });
 
 test('BRAI recompute values stay the same after the formatter change', () => {

@@ -50,6 +50,8 @@ startLagMonitor();
 
 const store = require('./lib/store');
 const { config } = store;
+const { applyClock } = require('./lib/session');
+const { loadSession, viewOf } = require('./lib/trades');
 const auth = require('./lib/auth');
 const schwab = require('./lib/schwab');
 const state = require('./lib/state');
@@ -78,10 +80,23 @@ async function stateHandler(req, res) {
   const SYMBOL_PATTERN = config.symbolPattern;
   const TICKER_SUGGESTIONS = config.tickerSuggestions;
   const finish = (body, code) => {
-    const status = body && body.status ? body.status : 'unknown';
+    const now = Date.now();
+    let session = null;
+    try {
+      session = viewOf(loadSession(now), null, now).session;
+    } catch {
+      session = null;
+    }
+    const stamped = applyClock(
+      { ...(body || {}), ...(session ? { session } : {}) },
+      now,
+      { start: config.blackoutStart, end: config.blackoutEnd }
+    );
+    const status = stamped && stamped.status ? stamped.status : 'unknown';
     writeDiag(`state handler ${sym} ${Date.now() - started}ms status=${status}`);
-    if (code) return res.status(code).json(body);
-    return res.json(body);
+    res.set('Cache-Control', 'no-store');
+    if (code) return res.status(code).json(stamped);
+    return res.json(stamped);
   };
 
   if (!SYMBOL_PATTERN.test(sym)) {
@@ -165,6 +180,16 @@ registerRoutes(app, {
   getAccountStatus: () => accountStatusOf(getAccountSnapshot()),
   getFillWatch: () => fillWatchOf(getAccountSnapshot()),
   releaseSymbol: symbol => state.releaseSymbol(symbol),
+  readWatchlist: () => state.readWatchlist(state.watchRedis()),
+  writeWatchlist: symbols => {
+    const session = loadSession(Date.now());
+    const pinned = [];
+    if (session.open && session.open.symbol) pinned.push(String(session.open.symbol).toUpperCase());
+    for (const [name, count] of Object.entries(session.symbol_losers || {})) {
+      if (count >= 3) pinned.push(name);
+    }
+    return state.writeWatchlist(state.watchRedis(), symbols, pinned);
+  },
   getStreamStatus: async () => {
     if (config.marketDataProvider !== 'webull') return null;
     const provider = getProvider();

@@ -437,8 +437,6 @@
 </div>
 
 <script>
-  const STORAGE_KEY = 'gatekeeper_last_symbol';
-  const PILLARS_KEY = 'gatekeeper_pillars';
   const STATE_POLL_MS = 1000;
   const HEALTH_POLL_MS = 30000;
   const DISCONNECT_MS = 60000;
@@ -466,26 +464,58 @@
   let marketSession = '';
   let openPositionSymbol = '';
   let lockedSymbols = [];
-  let blackoutUntil = null;
+  let dayLock = false;
+  let stopHit = false;
+  let inPosition = false;
+  let serverBlackout = { active: false, ends_at: null, end: null };
 
-  function blackoutMode(window, flags) {
-    if (!window || flags.dayLock || flags.stopHit) return null;
+  function blackoutMode(blackout, flags, now) {
+    const at = now == null ? Date.now() : now;
+    if (!blackout || blackout.active === false || flags.dayLock || flags.stopHit) return null;
+    const ends = Number.isFinite(blackout.ends_at) ? blackout.ends_at : null;
+    if (blackout.active !== true && ends == null) return null;
+    if (ends != null && at >= ends) return null;
     return flags.position ? 'banner' : 'overlay';
   }
 
   function paintBlackoutCount() {
     const el = document.getElementById('blackout-count');
     if (!el) return;
-    if (!Number.isFinite(blackoutUntil)) {
+    const ends = serverBlackout && serverBlackout.ends_at;
+    if (!Number.isFinite(ends) || blackoutMode(serverBlackout, { position: inPosition, dayLock, stopHit }) !== 'overlay') {
       el.textContent = '';
       return;
     }
-    const left = Math.max(0, Math.ceil((blackoutUntil - Date.now()) / 1000));
+    const left = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
     const mm = String(Math.floor(left / 60)).padStart(2, '0');
     const ss = String(left % 60).padStart(2, '0');
     el.textContent = `${mm}:${ss}`;
   }
-  setInterval(paintBlackoutCount, 1000);
+
+  function paintTimeLocks() {
+    const mode = blackoutMode(serverBlackout, { position: inPosition, dayLock, stopHit });
+    document.getElementById('overlay-done').classList.toggle('overlay-active', dayLock);
+    document.getElementById('overlay-stop').classList.toggle('overlay-active', !dayLock && stopHit);
+    document.getElementById('overlay-blackout').classList.toggle('overlay-active', mode === 'overlay');
+    document.getElementById('blackout-banner').hidden = mode !== 'banner';
+    document.getElementById('app').classList.toggle('lock-dim', dayLock || stopHit || mode === 'overlay');
+    if (serverBlackout && serverBlackout.end) document.getElementById('blackout-end').textContent = serverBlackout.end;
+    paintBlackoutCount();
+  }
+
+  function applyServerClock(data) {
+    if (!data) return;
+    if (data.market_session) marketSession = data.market_session;
+    if (data.blackout) serverBlackout = data.blackout;
+    if (data.session && typeof data.session === 'object' && Object.prototype.hasOwnProperty.call(data.session, 'lockout')) {
+      dayLock = data.session.lockout === 'day';
+    } else if (typeof data.lockout === 'string' || data.lockout === null) {
+      dayLock = data.lockout === 'day';
+    }
+    paintTimeLocks();
+    renderLiveAge();
+  }
+  setInterval(paintTimeLocks, 1000);
   let pillarKey = '';
   let stateAuthFailed = false;
   let feedStale = false;
@@ -543,23 +573,6 @@
   function formatAgo(ms) {
     const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
     return seconds + 's';
-  }
-
-  function loadPillars() {
-    let list = [];
-    try { list = JSON.parse(localStorage.getItem(PILLARS_KEY)) || []; } catch { list = []; }
-    if (!Array.isArray(list)) list = [];
-    list = list.map(item => String(item || '').toUpperCase()).filter(Boolean).slice(0, 3);
-    if (!list.length) {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) list = [String(saved).toUpperCase()];
-    }
-    return list;
-  }
-
-  function savePillars() {
-    localStorage.setItem(PILLARS_KEY, JSON.stringify(pillars));
-    if (symbol) localStorage.setItem(STORAGE_KEY, symbol);
   }
 
   function pillarSignature() {
@@ -718,40 +731,61 @@
     add.type = 'button';
     add.className = 'pillar-add';
     add.id = 'ticker-add';
-    add.textContent = '+ add ticker';
+    add.textContent = '+ ADD TICKER';
     add.addEventListener('click', () => { adding = true; renderPillars(); });
     nav.append(add);
+  }
+
+  async function saveWatch(list) {
+    const { ok, data } = await fetchJson('/api/watchlist', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: list })
+    });
+    if (!ok || !Array.isArray(data?.symbols)) return null;
+    return data.symbols.map(item => String(item || '').toUpperCase()).filter(Boolean).slice(0, 3);
   }
 
   function commitAdd(raw) {
     const val = String(raw || '').trim().toUpperCase();
     adding = false;
     if (!val) { renderPillars(); return; }
-    if (!pillars.includes(val)) pillars.push(val);
-    pillars = pillars.slice(0, 3);
-    savePillars();
-    selectSymbol(val);
+    const next = pillars.includes(val) ? pillars.slice() : pillars.concat(val).slice(0, 3);
+    saveWatch(next).then(saved => {
+      if (!saved) { renderPillars(); return; }
+      pillars = saved;
+      selectSymbol(saved.includes(val) ? val : (saved[0] || ''));
+    }).catch(() => renderPillars());
   }
 
   function removePillar(name) {
-    if (openPositionSymbol === name) return;
+    if (openPositionSymbol === name || lockedSymbols.includes(name)) return;
     const index = pillars.indexOf(name);
     const previous = pillars.slice();
     const quote = pillarQuotes[name];
-    delete pillarQuotes[name];
-    pillars = pillars.filter(item => item !== name);
-    savePillars();
-    const wasSelected = symbol === name;
-    if (wasSelected) selectSymbol(pillars[index] || pillars[pillars.length - 1] || '');
-    else renderPillars();
-    fetchJson(`/api/symbols/${encodeURIComponent(name)}/unwatch`, { method: 'POST' }).then(({ status }) => {
-      if (status !== 409) return;
-      openPositionSymbol = name;
-      pillars = previous;
-      if (quote) pillarQuotes[name] = quote;
-      savePillars();
-      if (wasSelected) selectSymbol(name);
+    const next = pillars.filter(item => item !== name);
+    saveWatch(next).then(saved => {
+      if (!saved) return;
+      if (saved.includes(name)) {
+        pillars = saved;
+        renderPillars();
+        return;
+      }
+      delete pillarQuotes[name];
+      pillars = saved;
+      const wasSelected = symbol === name;
+      if (wasSelected) selectSymbol(pillars[index] || pillars[pillars.length - 1] || '');
       else renderPillars();
+      fetchJson(`/api/symbols/${encodeURIComponent(name)}/unwatch`, { method: 'POST' }).then(({ status }) => {
+        if (status !== 409) return;
+        openPositionSymbol = name;
+        if (quote) pillarQuotes[name] = quote;
+        saveWatch(previous).then(restored => {
+          pillars = restored || previous;
+          if (wasSelected) selectSymbol(name);
+          else renderPillars();
+        }).catch(() => {});
+      }).catch(() => {});
     }).catch(() => {});
   }
 
@@ -760,7 +794,6 @@
     symbol = next || '';
     quote = null;
     view = null;
-    savePillars();
     document.getElementById('header-symbol').textContent = symbol || '—';
     document.getElementById('header-price').textContent = '';
     document.getElementById('header-daily').textContent = '';
@@ -1594,7 +1627,11 @@
         pinned = true;
       }
     }
-    if (pinned) savePillars();
+    if (pinned) saveWatch(pillars).then(saved => {
+      if (!saved) return;
+      pillars = saved;
+      renderPillars();
+    }).catch(() => {});
     const lockNote = document.getElementById('symbol-lock');
     const lockedHere = lockedSymbols.includes(symbol);
     if (lockNote) {
@@ -1622,22 +1659,18 @@
     if (data.account?.status === 'ok' || !data.account?.status) adoptPosition(data.position);
     const plan = tradePlan(data);
     document.body.classList.toggle('trade', Boolean(plan));
-    const dayLock = data.session?.lockout === 'day';
+    inPosition = Boolean(plan);
+    if (data.session && Object.prototype.hasOwnProperty.call(data.session, 'lockout')) {
+      dayLock = data.session.lockout === 'day';
+    }
     const sessionRisk = dayLock || (data.session && (data.session.realized_usd !== 0 || data.session.streak > 0));
     document.body.classList.toggle('risk', Boolean(plan) || sessionRisk);
     renderRisk(data.session);
     if (plan) renderTrade(data, plan);
     renderLadder(data, plan && Number.isFinite(plan.r) ? plan : null);
-    const stopHit = data.stop_hit === true;
-    const mode = blackoutMode(data.blackout, { position: Boolean(plan), dayLock, stopHit });
-    document.getElementById('overlay-done').classList.toggle('overlay-active', dayLock);
-    document.getElementById('overlay-stop').classList.toggle('overlay-active', !dayLock && stopHit);
-    document.getElementById('overlay-blackout').classList.toggle('overlay-active', mode === 'overlay');
-    document.getElementById('blackout-banner').hidden = mode !== 'banner';
-    document.getElementById('app').classList.toggle('lock-dim', dayLock || stopHit || mode === 'overlay');
-    blackoutUntil = mode === 'overlay' ? data.blackout.until : null;
-    if (data.blackout?.end) document.getElementById('blackout-end').textContent = data.blackout.end;
-    paintBlackoutCount();
+    stopHit = data.stop_hit === true;
+    if (data.blackout) serverBlackout = data.blackout;
+    paintTimeLocks();
   }
 
   function adoptPosition(position) {
@@ -1650,7 +1683,7 @@
         pillars = pillars.filter(name => name !== drop);
       }
       pillars.push(sym);
-      savePillars();
+      saveWatch(pillars).catch(() => {});
     }
     selectSymbol(sym);
   }
@@ -1795,7 +1828,7 @@
   }
 
   async function fetchJson(url, options) {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { cache: 'no-store', ...(options || {}) });
     let data = null;
     try { data = await res.json(); } catch { return { ok: res.ok, status: res.status, data: null }; }
     return { ok: res.ok, status: res.status, data };
@@ -1824,6 +1857,7 @@
       const { ok, data } = await fetchJson(`/api/state/${encodeURIComponent(symbol)}`, { signal: controller.signal });
       if (!data) { notePollFailure(); updateOverlays(); return; }
       notePollSuccess();
+      applyServerClock(data);
       if (data.status === 'auth_failed') { stateAuthFailed = true; waitingForData = true; updateOverlays(); return; }
       stateAuthFailed = false;
       if (data.status === 'stream_taken') {
@@ -1904,18 +1938,21 @@
     renderPillars();
   }
 
-  function init() {
-    pillars = loadPillars();
-    const params = new URLSearchParams(location.search);
-    if (!pillars.length && params.get('pillars')) {
-      pillars = params.get('pillars').split(',').map(item => item.trim().toUpperCase()).filter(Boolean).slice(0, 3);
+  async function pollClock() {
+    try {
+      const { data } = await fetchJson('/api/status');
+      applyServerClock(data);
+    } catch {
+      /* the next tick retries */
     }
-    const querySymbol = params.get('symbol');
-    if (querySymbol && !pillars.length) pillars = [querySymbol.trim().toUpperCase()];
-    const wanted = querySymbol ? querySymbol.trim().toUpperCase() : '';
-    const saved = localStorage.getItem(STORAGE_KEY);
-    symbol = pillars.includes(wanted) ? wanted : (pillars.includes(saved) ? saved : (pillars[0] || ''));
-    document.getElementById('header-symbol').textContent = symbol || '—';
+  }
+
+  async function init() {
+    try { localStorage.removeItem('gatekeeper_pillars'); } catch { /* private mode */ }
+    try { localStorage.removeItem('gatekeeper_last_symbol'); } catch { /* private mode */ }
+    pillars = [];
+    symbol = '';
+    document.getElementById('header-symbol').textContent = '—';
     renderPillars();
     pollHealth();
     healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
@@ -1926,7 +1963,20 @@
       if (activeOverlayId === 'stale') renderStaleAge();
       if (activeOverlayId === 'unreachable') renderUnreachableAge();
       if (hasReceivedOk) renderLiveAge();
+      if (!symbol) pollClock();
     }, 1000);
+    pollClock();
+    try {
+      const { data } = await fetchJson('/api/watchlist');
+      pillars = Array.isArray(data?.symbols)
+        ? data.symbols.map(item => String(item || '').toUpperCase()).filter(Boolean).slice(0, 3)
+        : [];
+    } catch {
+      pillars = [];
+    }
+    symbol = pillars[0] || '';
+    document.getElementById('header-symbol').textContent = symbol || '—';
+    renderPillars();
     if (symbol) {
       waitingForData = true;
       updateOverlays();

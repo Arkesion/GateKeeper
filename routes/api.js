@@ -1,5 +1,8 @@
 'use strict';
 
+const { applyClock } = require('../lib/session');
+const { loadSession, viewOf } = require('../lib/trades');
+
 module.exports = function registerRoutes(app, deps) {
   const {
     SYMBOL_PATTERN,
@@ -45,6 +48,35 @@ module.exports = function registerRoutes(app, deps) {
       ...(typeof deps.getFillWatch === 'function'
         ? deps.getFillWatch()
         : { orders_stream: null, positions_poll_age_s: null, open_positions: null })
+    });
+  });
+
+  app.get('/api/watchlist', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const symbols = typeof deps.readWatchlist === 'function' ? await deps.readWatchlist() : [];
+    res.json({ symbols });
+  });
+
+  app.put('/api/watchlist', (req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', async () => {
+      let body = {};
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+      } catch {
+        return res.status(400).json({ ok: false });
+      }
+      if (typeof deps.writeWatchlist !== 'function') {
+        return res.status(503).json({ ok: false });
+      }
+      try {
+        const symbols = await deps.writeWatchlist(body.symbols);
+        res.set('Cache-Control', 'no-store');
+        return res.json({ symbols });
+      } catch {
+        return res.status(503).json({ ok: false });
+      }
     });
   });
 
@@ -103,10 +135,26 @@ module.exports = function registerRoutes(app, deps) {
   });
 
   app.get('/api/status', (req, res) => {
+    const now = Date.now();
+    let session = null;
+    try {
+      session = viewOf(loadSession(now), null, now).session;
+    } catch {
+      session = null;
+    }
+    const clock = applyClock(
+      session ? { session } : {},
+      now,
+      { start: deps.config.blackoutStart, end: deps.config.blackoutEnd }
+    );
+    res.set('Cache-Control', 'no-store');
     res.json({
       authenticated: deps.getAuthenticated(),
-      session: getMarketSession(),
-      open: isGatekeeperOpen(),
+      session: clock.market_session,
+      market_session: clock.market_session,
+      blackout: clock.blackout,
+      lockout: clock.session ? clock.session.lockout : null,
+      open: isGatekeeperOpen(now),
       hoursEt: '4:00 AM – 8:00 PM'
     });
   });
