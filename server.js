@@ -206,7 +206,11 @@ registerRoutes(app, {
   stateHandler
 });
 
-app.use(express.static('public'));
+app.use(express.static('public', {
+  setHeaders(res, filePath) {
+    if (String(filePath).endsWith('index.html')) res.set('Cache-Control', 'no-store');
+  }
+}));
 
 async function initAuthOnStartup() {
   if (auth.accessTokenStillValid()) {

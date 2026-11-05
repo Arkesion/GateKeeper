@@ -257,6 +257,17 @@ def _order_rows(payload):
         if isinstance(nested, list):
             out.extend(item for item in nested if isinstance(item, dict))
             continue
+        items = row.get("items")
+        if isinstance(items, list) and items:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                merged = dict(item)
+                for key in ("client_order_id", "clientOrderId", "order_id", "orderId"):
+                    if row.get(key) and not merged.get(key):
+                        merged[key] = row.get(key)
+                out.append(merged)
+            continue
         out.append(row)
     return out
 
@@ -291,16 +302,19 @@ def format_et(ms):
 def parse_recent_fills(payload):
     out = []
     for row in _order_rows(payload):
-        kind = str(_first(row, "instrument_type", "instrumentType") or "EQUITY").upper()
-        if kind != "EQUITY":
+        kind = _first(row, "instrument_type", "instrumentType")
+        if kind and str(kind).upper() != "EQUITY":
             continue
         status = str(_first(row, "order_status", "orderStatus", "status") or "").upper().replace(" ", "_")
         if status not in FILLED:
             continue
         symbol = str(_first(row, "symbol", "ticker") or "").upper()
         side = _side(_first(row, "side", "order_side", "orderSide"))
-        ts = _epoch_ms(_first(row, "filled_time", "filledTime", "place_time", "create_time", "createTime"))
-        shares = _num(_first(row, "filled_quantity", "filledQuantity", "filled_qty", "quantity"))
+        ts = _epoch_ms(_first(
+            row, "last_filled_time", "lastFilledTime", "filled_time", "filledTime",
+            "place_time", "create_time", "createTime"
+        ))
+        shares = _num(_first(row, "filled_quantity", "filledQuantity", "filled_qty", "quantity", "qty"))
         price = _num(_first(row, "filled_price", "filledPrice", "avg_filled_price", "average_price"))
         if not symbol or not side or ts is None:
             continue
@@ -351,15 +365,17 @@ def new_closing_sell(lots, symbol, known_ids):
     return None
 
 
-def chase_exit(symbol, known_ids, fetch, sleep, retries=3):
-    """One history read now, then `retries` more, two seconds apart."""
-    for attempt in range(retries + 1):
-        if attempt:
-            sleep(2)
+def chase_exit(symbol, known_ids, fetch, sleep, seconds=10, interval=2):
+    """Read now, then every `interval` seconds, and stop once `seconds` have passed."""
+    waited = 0
+    while True:
         lots = fetch()
         if lots is not None and new_closing_sell(lots, symbol, known_ids):
             return "found", lots
-    return "unconfirmed", None
+        if waited >= seconds:
+            return "estimated", None
+        sleep(interval)
+        waited += interval
 
 
 def recent_fill_line(rows):
@@ -685,6 +701,75 @@ def history_bounds(moment):
     return start.strftime(stamp), moment.strftime(stamp)
 
 
+def merge_lots(existing, incoming):
+    merged = []
+    index = {}
+    for lot in list(existing or []) + list(incoming or []):
+        if not isinstance(lot, dict):
+            continue
+        key = str(lot.get("order_id") or "") or f"{lot.get('symbol')}:{lot.get('side')}:{lot.get('ts')}"
+        if key in index:
+            merged[index[key]] = lot
+            continue
+        index[key] = len(merged)
+        merged.append(lot)
+    return merged
+
+
+def load_day_fills(redis_client):
+    try:
+        raw = redis_client.get("gk:day_fills")
+        rows = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def publish_day_fills(redis_client, incoming):
+    merged = merge_lots(load_day_fills(redis_client), incoming)
+    redis_client.set("gk:day_fills", json.dumps(merged))
+    return merged
+
+
+def last_trade_price(redis_client, symbol):
+    try:
+        raw = redis_client.get(f"gk:quote:{symbol}")
+        quote = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(quote, dict):
+        return None
+    return _num(quote.get("lastPrice"))
+
+
+def read_today_orders(reader, account_id):
+    from webull.trade.request.get_today_orders_request import TodayOrdersListRequest
+    from webull_data import response_json
+    rows = []
+    last = None
+    status = 200
+    for _ in range(5):
+        request = TodayOrdersListRequest()
+        request.set_account_id(account_id)
+        request.set_page_size(100)
+        if last:
+            request.set_last_client_order_id(last)
+        response = reader.client.get_response(request)
+        status = _http_status(response)
+        retry_after = retry_after_seconds(response)
+        if status not in (None, 200):
+            return None, status, retry_after
+        payload = response_json(response)
+        rows.extend(parse_recent_fills(payload))
+        if not isinstance(payload, dict) or not payload.get("hasNext"):
+            break
+        orders = payload.get("orders") or []
+        last = orders[-1].get("client_order_id") if orders and isinstance(orders[-1], dict) else None
+        if not last:
+            break
+    return rows, status or 200, None
+
+
 def read_recent_fills(reader, account_id, now=None):
     from datetime import datetime, timezone
     from webull.trade.request.v3.get_order_history_request_v2 import OrderHistoryRequestV2
@@ -791,7 +876,7 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                     if line != last_fill_line["text"]:
                         LOG.info("%s", line)
                         last_fill_line["text"] = line
-                    redis_client.set("gk:day_fills", json.dumps(day_lots(fills)))
+                    publish_day_fills(redis_client, day_lots(fills))
             if stop_event.wait(wait):
                 return
 
@@ -896,20 +981,22 @@ def run_account(stop_event, redis_client, token_dir, account_id):
                     try:
                         if reader is None:
                             return None
-                        fills, status, _retry = read_recent_fills(reader, account_id)
+                        fills, status, _retry = read_today_orders(reader, account_id)
                     except Exception:
                         return None
                     if status == 429 or fills is None:
                         return None
-                    lots = day_lots(fills)
-                    redis_client.set("gk:day_fills", json.dumps(lots))
-                    return lots
+                    return publish_day_fills(redis_client, day_lots(fills))
 
                 outcome, _lots = chase_exit(symbol, known_ids, fetch, stop_event.wait)
                 if outcome == "found" and watch.get("exit", {}).get("symbol") == symbol:
                     watch.pop("exit", None)
-                elif outcome != "found":
-                    watch["exit"] = {"symbol": symbol, "status": "unconfirmed"}
+                elif outcome != "found" and watch.get("exit", {}).get("symbol") == symbol:
+                    watch["exit"] = {
+                        "symbol": symbol,
+                        "status": "estimated",
+                        "price": last_trade_price(redis_client, symbol),
+                    }
                 publish()
             finally:
                 chasing.discard(symbol)

@@ -20,6 +20,7 @@ const {
   rebuildFromFills,
   reconcilePositions,
   saveSession,
+  shownPnl,
   viewOf
 } = require('../lib/trades');
 
@@ -562,6 +563,97 @@ test('CHSN today is two losers, a third locks the symbol, and a scratch does not
   rebuildFromFills(restored, third, now + 4000, opts);
   assert.equal(restored.symbol_losers.CHSN, 3);
   assert.deepEqual(viewOf(restored, null, now + 4000, opts).session.locked_symbols, ['CHSN']);
+});
+
+test('ELPW books the 3.67 sell, and an estimate is replaced by that fill', () => {
+  const buyAt = Date.parse('2026-11-05T14:37:34.000Z');
+  const sellAt = Date.parse('2026-11-05T14:38:52.000Z');
+  const round = [
+    { symbol: 'ELPW', side: 'BUY', shares: 1, price: 3.83, ts: buyAt, order_id: 'buy' },
+    { symbol: 'ELPW', side: 'SELL', shares: 1, price: 3.67, ts: sellAt, order_id: 'sell' }
+  ];
+  const opts = tempOpts();
+  applyMarket({
+    symbol: 'ELPW',
+    now: buyAt,
+    price: 3.83,
+    lastBarLow: 3.63,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'ELPW', shares: 1, average: 3.83 }],
+      fills: [{ id: 'b', symbol: 'ELPW', side: 'BUY', shares: 1, price: 3.83, ts: buyAt, order_id: 'buy' }]
+    }
+  }, opts);
+  const closed = applyMarket({
+    symbol: 'ELPW',
+    now: sellAt,
+    price: 3.88,
+    account: { status: 'ok', positions: [], dayFills: round }
+  }, opts);
+  assert.equal(closed.position, null);
+  assert.equal(closed.session.realized_usd, -0.16);
+  assert.equal(closed.session.symbol_losers.ELPW, 1);
+  assert.equal(closed.session.losers, 1);
+  assert.equal(shownPnl(3.83, 1, 0.2, 3.88, null), null);
+  assert.equal(Math.round(shownPnl(3.83, 1, 0.2, 3.88).pnl * 100) / 100, 0.05);
+
+  const estimatedOpts = tempOpts();
+  applyMarket({
+    symbol: 'ELPW',
+    now: buyAt,
+    price: 3.83,
+    lastBarLow: 3.63,
+    account: {
+      status: 'ok',
+      positions: [{ symbol: 'ELPW', shares: 1, average: 3.83 }],
+      fills: [{ id: 'b', symbol: 'ELPW', side: 'BUY', shares: 1, price: 3.83, ts: buyAt, order_id: 'buy' }]
+    }
+  }, estimatedOpts);
+  const confirming = applyMarket({
+    symbol: 'ELPW',
+    now: sellAt,
+    price: 3.88,
+    account: {
+      status: 'ok',
+      positions: [],
+      dayFills: [round[0]],
+      exit: { symbol: 'ELPW', status: 'confirming' }
+    }
+  }, estimatedOpts);
+  assert.equal(confirming.position.symbol, 'ELPW');
+  assert.equal(confirming.exit.status, 'confirming');
+  assert.equal(confirming.session.realized_usd, 0);
+  const estimated = applyMarket({
+    symbol: 'ELPW',
+    now: sellAt + 10000,
+    price: 3.88,
+    account: {
+      status: 'ok',
+      positions: [],
+      dayFills: [],
+      exit: { symbol: 'ELPW', status: 'estimated', price: 3.88 }
+    }
+  }, estimatedOpts);
+  assert.equal(estimated.position, null);
+  assert.equal(estimated.session.realized_usd, 0.05);
+  const kept = applyMarket({
+    symbol: 'ELPW',
+    now: sellAt + 12000,
+    price: 3.88,
+    account: { status: 'ok', positions: [], dayFills: [] }
+  }, estimatedOpts);
+  assert.equal(kept.session.realized_usd, 0.05);
+  const replaced = applyMarket({
+    symbol: 'ELPW',
+    now: sellAt + 20000,
+    price: 3.67,
+    account: { status: 'ok', positions: [], dayFills: round }
+  }, estimatedOpts);
+  assert.equal(replaced.session.realized_usd, -0.16);
+  assert.equal(replaced.session.symbol_losers.ELPW, 1);
+  assert.equal(replaced.session.streak, 1);
+  const lines = fs.readFileSync(estimatedOpts.tradeLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(lines[0].estimated, true);
 });
 
 test('a buy inside the opening blackout is tagged and a 09:24 buy is not', () => {

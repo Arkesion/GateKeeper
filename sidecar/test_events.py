@@ -116,9 +116,39 @@ class ParseEventsTest(unittest.TestCase):
 
         gave_up = []
         status, missed = chase_exit("CHSN", {"old-sell"}, fetch_never, gave_up.append)
-        self.assertEqual(status, "unconfirmed")
+        self.assertEqual(status, "estimated")
         self.assertIsNone(missed)
-        self.assertEqual(gave_up, [2, 2, 2])
+        self.assertEqual(gave_up, [2, 2, 2, 2, 2])
+
+    def test_today_orders_read_the_nested_elpw_fill(self):
+        rows = parse_recent_fills({
+            "hasNext": False,
+            "orders": [{
+                "client_order_id": "sell-1",
+                "items": [{
+                    "symbol": "ELPW",
+                    "side": "SELL",
+                    "order_status": "FILLED",
+                    "filled_qty": "1",
+                    "filled_price": "3.67",
+                    "last_filled_time": "2026-11-05T14:38:52.000Z",
+                }],
+            }, {
+                "client_order_id": "buy-1",
+                "items": [{
+                    "symbol": "ELPW",
+                    "side": "BUY",
+                    "order_status": "FILLED",
+                    "filled_qty": "1",
+                    "filled_price": "3.83",
+                    "last_filled_time": "2026-11-05T14:37:34.000Z",
+                }],
+            }],
+        })
+        self.assertEqual(
+            [(row["side"], row["shares"], row["price"]) for row in rows],
+            [("SELL", 1.0, 3.67), ("BUY", 1.0, 3.83)],
+        )
 
     def test_account_id_is_not_the_display_number(self):
         rows = parse_account_list({

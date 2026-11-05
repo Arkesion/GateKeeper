@@ -107,7 +107,7 @@ test('an open page picks up the blackout on the next poll and clears at 09:35', 
   for (const date of ['2026-11-05', '2026-10-30']) {
     const loadedAt = utcFromEtDateTime(date, 9, 24) + 50000;
     const loaded = applyClock({ status: 'data_stale' }, loadedAt, cfg);
-    assert.equal(loaded.blackout.active, false);
+    assert.equal(loaded.blackout, null);
     assert.equal(loaded.market_session, 'PRE');
     assert.equal(blackoutMode(loaded.blackout, {}, loadedAt), null);
     const seenAt = utcFromEtDateTime(date, 9, 25) + 1000;
@@ -119,7 +119,12 @@ test('an open page picks up the blackout on the next poll and clears at 09:35', 
     const end = utcFromEtDateTime(date, 9, 35);
     assert.equal(blackoutMode(seen.blackout, {}, end), null);
     const cleared = applyClock(seen, end, cfg);
-    assert.equal(cleared.blackout.active, false);
+    assert.equal(cleared.blackout, null);
+    const later = utcFromEtDateTime(date, 9, 42);
+    const after = applyClock({ status: 'ok' }, later, cfg);
+    assert.equal(after.blackout, null);
+    assert.equal(blackoutMode(after.blackout, { position: true }, later), null);
+    assert.equal(blackoutMode({ active: false }, { position: true }, later), null);
     assert.equal(applyClock({ status: 'ok' }, utcFromEtDateTime(date, 9, 30), cfg).market_session, 'RTH');
   }
   const until = utcFromEtDateTime('2026-11-06', 4, 0);

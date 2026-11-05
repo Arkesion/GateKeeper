@@ -274,7 +274,7 @@
       gap: 4px;
     }
     #path .kicker { color: #FBBF24; }
-    #path-text { line-height: 1.6; }
+    #path-text { line-height: 1.6; white-space: pre-line; }
     .exit { display: flex; justify-content: space-between; }
     #exit-rows { display: flex; flex-direction: column; gap: 7px; }
     .exit .state { color: #737373; }
@@ -506,7 +506,7 @@
   function applyServerClock(data) {
     if (!data) return;
     if (data.market_session) marketSession = data.market_session;
-    if (data.blackout) serverBlackout = data.blackout;
+    if (Object.prototype.hasOwnProperty.call(data, 'blackout')) serverBlackout = data.blackout;
     if (data.session && typeof data.session === 'object' && Object.prototype.hasOwnProperty.call(data.session, 'lockout')) {
       dayLock = data.session.lockout === 'day';
     } else if (typeof data.lockout === 'string' || data.lockout === null) {
@@ -1058,45 +1058,58 @@
     return { lo, hi };
   }
 
+  function pathRank(level) {
+    const name = String(level?.name || '');
+    if (name === 'high of day') return 6;
+    if (name === 'daily resistance') return 5;
+    if (name === 'VWAP') return 2;
+    if (name === 'pivot') return 1;
+    if (name.startsWith('$')) {
+      const cents = Math.round(Number(level.price) * 100);
+      if (cents % 100 === 0) return 4;
+      if (cents % 50 === 0) return 3;
+    }
+    return 0;
+  }
+
   function pathCallout(entry, r, levels) {
-    const groups = {
-      'entry and 1R': [],
-      '1R and 2R': [],
-      '2R and 3R': []
-    };
-    const pathTop = entry + 3 * r;
+    const bands = [
+      ['entry to 1R', 0, 1],
+      ['1R to 2R', 1, 2],
+      ['2R to 3R', 2, 3]
+    ];
     const rows = [];
     if (Number.isFinite(entry) && r > 0) {
+      const pathTop = entry + 3 * r;
       for (let dollar = Math.ceil((entry + 1e-9) * 2) / 2; dollar < pathTop - 1e-9; dollar = Math.round((dollar + 0.5) * 100) / 100) {
         rows.push({ name: `$${dollar.toFixed(2)}`, price: Math.round(dollar * 100) / 100 });
       }
     }
-    for (const level of levels || []) rows.push(level);
-    const seen = new Set();
-    if (Number.isFinite(entry) && Number.isFinite(pathTop) && r > 0) {
-      for (const level of rows) {
+    for (const level of levels || []) {
+      if (level?.name === 'pivot' && !(Number(level.touches) >= 2)) continue;
+      rows.push(level);
+    }
+    return bands.map(([label, lo, hi]) => {
+      if (!Number.isFinite(entry) || !(r > 0)) return `${label}: clear`;
+      const inside = rows.filter(level => {
         const price = Number(level?.price);
-        if (!Number.isFinite(price) || price <= entry || price >= pathTop) continue;
-        const key = `${level.name}|${price.toFixed(2)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        if (!Number.isFinite(price) || pathRank(level) <= 0) return false;
+        if (price <= entry || price >= entry + 3 * r) return false;
         const dist = (price - entry) / r;
-        const band = dist < 1 ? 'entry and 1R' : dist < 2 ? '1R and 2R' : '2R and 3R';
-        const shown = String(level.name).startsWith('$') ? level.name : `${level.name} ${price.toFixed(2)}`;
-        groups[band].push(shown);
+        return dist >= lo && dist < hi;
+      });
+      inside.sort((a, b) => pathRank(b) - pathRank(a) || (a.price - entry) - (b.price - entry));
+      let winner = null;
+      for (const level of inside) {
+        if (winner && Math.abs(level.price - winner.price) <= 0.02 + 1e-9) continue;
+        winner = level;
+        break;
       }
-    }
-    const sentences = [];
-    for (const [band, items] of Object.entries(groups)) {
-      if (!items.length) continue;
-      const list = items.length === 1
-        ? items[0]
-        : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-      sentences.push(`${list} ${items.length === 1 ? 'sits' : 'sit'} between ${band}`);
-    }
-    return sentences.length
-      ? `${sentences.join('. ')}.`
-      : 'No structure between entry and 3R.';
+      if (!winner) return `${label}: clear`;
+      const cents = Math.round((winner.price - entry) * 100);
+      const sign = cents > 0 ? '+' : cents < 0 ? '−' : '';
+      return `${label}: ${winner.name} ${sign}${Math.abs(cents)}c`;
+    }).join('\n');
   }
 
   function exitToppingTail(notes, openedAt) {
@@ -1508,11 +1521,22 @@
     return `${up ? '+' : '−'}$${Math.abs(value).toFixed(2)}`;
   }
 
+  function shownPnl(entry, shares, r, mark, exitPrice) {
+    const exited = arguments.length >= 5;
+    const price = exited ? exitPrice : mark;
+    if (!Number.isFinite(entry) || !(shares > 0) || !Number.isFinite(price) || !(r > 0)) return null;
+    return { pnl: (price - entry) * shares, r: (price - entry) / r };
+  }
+
   function renderTrade(data, plan) {
     const price = data.context?.price;
     const shares = Number.isFinite(plan.shares) ? plan.shares : 0;
-    const pnl = Number.isFinite(price) && Number.isFinite(plan.entry) ? (price - plan.entry) * shares : null;
-    const rMult = Number.isFinite(price) && Number.isFinite(plan.entry) && plan.r > 0 ? (price - plan.entry) / plan.r : null;
+    const exited = Boolean(data.exit);
+    const shown = exited
+      ? shownPnl(plan.entry, shares, plan.r, price, Number.isFinite(data.exit.price) ? data.exit.price : null)
+      : shownPnl(plan.entry, shares, plan.r, price);
+    const pnl = shown ? shown.pnl : null;
+    const rMult = shown ? shown.r : null;
     const pnlEl = document.getElementById('position-pnl');
     if (Number.isFinite(pnl) && Number.isFinite(rMult)) {
       const up = pnl >= 0;
@@ -1532,14 +1556,11 @@
     const ctx = data.context || {};
     const pathLevels = [
       ['VWAP', ctx.vwap_value],
-      ['9 EMA', ctx.ema9_1m_value],
-      ['20 EMA', ctx.ema20_1m_value],
       ['high of day', ctx.session_high],
-      ['low of day', ctx.session_low],
       ['daily resistance', ctx.daily_resistance?.price]
     ].filter(([, level]) => Number.isFinite(level)).map(([name, level]) => ({ name, price: level }));
     for (const pivot of ctx.pivots || []) {
-      if (Number.isFinite(pivot?.price)) pathLevels.push({ name: 'pivot', price: pivot.price });
+      if (Number.isFinite(pivot?.price)) pathLevels.push({ name: 'pivot', price: pivot.price, touches: pivot.touches });
     }
     document.getElementById('path-text').textContent = pathCallout(plan.basis, plan.r, pathLevels);
 
@@ -1642,6 +1663,9 @@
     if (data.exit?.status === 'unconfirmed') {
       title.textContent = 'EXITED · fill unconfirmed';
       title.style.color = '#FBBF24';
+    } else if (data.exit?.status === 'estimated') {
+      title.textContent = 'EXITED · fill estimated';
+      title.style.color = '#FBBF24';
     } else if (data.exit?.status === 'confirming') {
       title.textContent = 'EXITED · confirming fill';
       title.style.color = '#FBBF24';
@@ -1659,7 +1683,7 @@
     if (data.account?.status === 'ok' || !data.account?.status) adoptPosition(data.position);
     const plan = tradePlan(data);
     document.body.classList.toggle('trade', Boolean(plan));
-    inPosition = Boolean(plan);
+    inPosition = Boolean(plan) && !data.exit;
     if (data.session && Object.prototype.hasOwnProperty.call(data.session, 'lockout')) {
       dayLock = data.session.lockout === 'day';
     }
@@ -1669,7 +1693,7 @@
     if (plan) renderTrade(data, plan);
     renderLadder(data, plan && Number.isFinite(plan.r) ? plan : null);
     stopHit = data.stop_hit === true;
-    if (data.blackout) serverBlackout = data.blackout;
+    if (Object.prototype.hasOwnProperty.call(data, 'blackout')) serverBlackout = data.blackout;
     paintTimeLocks();
   }
 

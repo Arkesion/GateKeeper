@@ -287,11 +287,18 @@ test('an open trade window keeps entry, stop, and 1R, and leaves 2R outside', ()
   assert.ok(wide.lo <= 3.50 && wide.hi >= 4.09);
 });
 
-test('high of day between 1R and 2R is named, and so is a half dollar', () => {
-  const text = pathCallout(4.09, 0.20, [{ name: 'high of day', price: 4.40 }]);
-  assert.match(text, /high of day 4\.40 sits between 1R and 2R/);
-  assert.match(text, /\$4\.50 sits between 2R and 3R/);
-  assert.equal(pathCallout(4.09, 0.20, []), '$4.50 sits between 2R and 3R.');
+test('each path segment names one level, and a one-touch pivot is ignored', () => {
+  const text = pathCallout(4.09, 0.20, [
+    { name: 'high of day', price: 4.40 },
+    { name: 'pivot', price: 4.41, touches: 2 },
+    { name: 'pivot', price: 4.20, touches: 1 }
+  ]);
+  assert.match(text, /entry to 1R: clear/);
+  assert.match(text, /1R to 2R: high of day \+31c/);
+  assert.doesNotMatch(text, /pivot/);
+  assert.match(text, /2R to 3R: \$4\.50 \+41c/);
+  const alone = pathCallout(4.09, 0.20, [{ name: 'pivot', price: 4.20, touches: 2 }]);
+  assert.match(alone, /entry to 1R: pivot \+11c/);
 });
 
 test('a topping tail that closed before entry is not an exit warning', () => {
