@@ -720,4 +720,9 @@ test('failing checks are the red chips only', () => {
     { front_side: { state: 'red' } },
     { state: 'green' }
   ), ['MACD', 'Choppy', 'Tail']);
+  assert.deepEqual(failingChecks(
+    { macd: true, no_hv_sell: true, no_big_red: true, no_topping_tail: true, spread_ok: true },
+    { front_side: { state: 'red', phase: 'back' } },
+    { state: 'green' }
+  ), ['Back side']);
 });

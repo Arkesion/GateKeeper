@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { replaySetup } = require('../lib/setup-machine');
+const { replaySetup, splitHeadline } = require('../lib/setup-machine');
 
 const START = Date.parse('2026-10-30T13:30:00Z');
 const KNOWN = new Set(['IDLE', 'SURGE', 'PULLBACK', 'ARMED', 'TRIGGERED', 'FAILED']);
@@ -290,4 +290,23 @@ test('TNMG 09:30 through 10:10 reports the setup sequence', () => {
     const mark = frame.crossed ? ' crossed' : '';
     console.log(`tnmg setup ${hm} ${frame.state}${mark} ${frame.reason}`);
   }
+});
+
+test('the setup headline puts the price on the first line and the pattern on the second', () => {
+  assert.deepEqual(splitHeadline('IDLE: needs a new high on volume'), {
+    title: 'IDLE',
+    detail: 'needs a new high on volume'
+  });
+  assert.deepEqual(splitHeadline('ARMED: $4.04 (Micro-Pullback)'), {
+    title: 'ARMED: $4.04',
+    detail: '(Micro-Pullback)'
+  });
+  assert.deepEqual(splitHeadline('TRIGGERED: broke $4.04 (Bull Flag)'), {
+    title: 'TRIGGERED: broke $4.04',
+    detail: '(Bull Flag)'
+  });
+  assert.deepEqual(splitHeadline('FAILED: heavy selling (Micro-Pullback)'), {
+    title: 'FAILED',
+    detail: 'heavy selling (Micro-Pullback)'
+  });
 });
